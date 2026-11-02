@@ -1,0 +1,6 @@
+timestamp: 2026-11-02T20:54:41
+type: INPUT_ERROR
+command: delete
+argv: delete panel /var/folders/mt/577rj6555hx1qhjh4fzg_mk40000gn/T/tmp.VoLk6JwvSG/step1.json --match-title POD --dry-run
+exit_code: 2
+message: file di input non trovato: /var/folders/mt/577rj6555hx1qhjh4fzg_mk40000gn/T/tmp.VoLk6JwvSG/step1.json

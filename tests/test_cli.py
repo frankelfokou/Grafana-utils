@@ -19,18 +19,33 @@ class ParserTest(unittest.TestCase):
         names = {c.NAME for c in ALL_COMMANDS}
         self.assertEqual(
             names,
-            {
-                "list-rows", "list-panels", "duplicate-row", "copy-panel", "move-panel",
-                "replace", "transform", "prune", "set-datasource", "reflow",
-                "validate", "lint", "append-row", "extract-row",
-            },
+            {"list", "create", "update", "delete", "move", "extract", "layout",
+             "validate", "lint"},
         )
 
-    def test_parse_assegna_la_funzione(self):
-        args = cli.build_parser().parse_args(["list-rows", "x.json"])
-        self.assertTrue(callable(args.func))
-        self.assertEqual(args.cmd, "list-rows")
-        self.assertEqual(args.file, "x.json")
+    def test_il_tipo_e_un_argomento_posizionale(self):
+        parser = cli.build_parser()
+        for kind in ("row", "panel"):
+            args = parser.parse_args(["list", kind, "x.json"])
+            self.assertEqual(args.kind, kind)
+            self.assertEqual(args.file, "x.json")
+            self.assertTrue(callable(args.func))
+
+    def test_il_tipo_deve_essere_row_o_panel(self):
+        with self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(["list", "widget", "x.json"])
+
+    def test_i_selettori_sono_gli_stessi_per_tutti_i_comandi(self):
+        parser = cli.build_parser()
+        for command in ("list", "update", "delete", "move", "extract"):
+            args = parser.parse_args([
+                command, "panel", "x.json", "--id", "1", "--id", "2",
+                "--match-title", "x", "--match-type", "stat", "--in-row", "3",
+            ])
+            self.assertEqual(args.id, [1, 2])
+            self.assertEqual(args.match_title, "x")
+            self.assertEqual(args.match_type, "stat")
+            self.assertEqual(args.in_row, 3)
 
 
 class MainTest(CLITestCase):
@@ -42,7 +57,8 @@ class MainTest(CLITestCase):
     def test_help(self):
         code, out, _ = self.run_cli("--help")
         self.assertEqual(code, 0)
-        self.assertIn("list-rows", out)
+        for command in ("list", "create", "update", "delete", "move", "extract"):
+            self.assertIn(command, out)
 
     def test_senza_comando_e_errore_d_uso(self):
         code, _, err = self.run_cli()
@@ -56,7 +72,7 @@ class MainTest(CLITestCase):
         self.assertEqual(len(self.logs("usage")), 1)
 
     def test_input_mancante(self):
-        code, _, err = self.run_cli("list-rows", str(self.tmp / "nope.json"))
+        code, _, err = self.run_cli("list", "row", str(self.tmp / "nope.json"))
         self.assertEqual(code, 2)
         self.assertIn("Errore input:", err)
         self.assertEqual(len(self.logs("input")), 1)
@@ -70,21 +86,23 @@ class MainTest(CLITestCase):
 
     def test_errore_di_output(self):
         src = self.write_json("in.json", sample_dashboard())
-        code, _, err = self.run_cli("copy-panel", src, "--panel-id", "2", "-o", str(self.tmp))
+        code, _, err = self.run_cli("update", "panel", src, "--id", "2",
+                                    "--title", "X", "-o", str(self.tmp))
         self.assertEqual(code, 3)
         self.assertIn("Errore output:", err)
         self.assertEqual(len(self.logs("output")), 1)
 
     def test_errore_di_comando(self):
         src = self.write_json("in.json", sample_dashboard())
-        code, _, err = self.run_cli("replace", src, "--replace", "senza-uguale")
+        code, _, err = self.run_cli("update", "row", src, "--id", "1",
+                                    "--replace", "senza-uguale")
         self.assertEqual(code, 1)
         self.assertIn("Errore:", err)
         self.assertEqual(len(self.logs("command")), 1)
 
     def test_read_only_con_none_esce_zero(self):
         src = self.write_json("in.json", sample_dashboard())
-        code, out, _ = self.run_cli("list-rows", src)
+        code, out, _ = self.run_cli("list", "row", src)
         self.assertEqual(code, 0)
         self.assertIn("Row A", out)
 
@@ -97,14 +115,16 @@ class MainTest(CLITestCase):
     def test_input_non_viene_mai_modificato(self):
         db = sample_dashboard()
         src = self.write_json("in.json", db)
-        self.run_cli("replace", src, "--replace", "up=down")
+        self.run_cli("update", "row", src, "--id", "1", "--replace", "up=down")
         self.assertEqual(self.read_json(src), db)
 
-    def test_pannello_non_riga_resta_intatto_dopo_errore(self):
-        src = self.write_json("in.json", {"panels": [panel(1, "a")]})
-        code, _, _ = self.run_cli("move-panel", src, "--panel-id", "1", "--target-row", "99")
+    def test_input_intatto_dopo_errore(self):
+        db = sample_dashboard()
+        src = self.write_json("in.json", db)
+        code, _, _ = self.run_cli("move", "panel", src, "--id", "2",
+                                  "--to-row", "99")
         self.assertEqual(code, 1)
-        self.assertTrue(self.read_json(src)["panels"])
+        self.assertEqual(self.read_json(src), db)
 
 
 if __name__ == "__main__":

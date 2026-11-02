@@ -1,45 +1,38 @@
 """Registro dei sottocomandi.
 
-Ogni comando espone l'interfaccia uniforme:
+Il blocco CRUD è unificato: `list`, `create`, `update`, `delete`, `move`
+ed `extract` ricevono `row` o `panel` come primo argomento, quindi non
+esiste più un comando per tipo di oggetto.
+
+Ogni modulo espone `command`: un'istanza di `ReadCommand` o `WriteCommand`
+con l'interfaccia uniforme usata da `cli.py`:
+
     NAME       stringa
     HELP       stringa
     configure(parser)  aggiunge gli argomenti
     run(args)          esegue e ritorna un exit code (int)
 
-I comandi possono essere implementati come moduli con funzioni (stile
-storico) o come istanze di `grafana_tool.command_base.WriteCommand` (stile
-class-based, Template Method). Entrambi i pattern sono accettati da cli.py.
+L'ordine di `ALL_COMMANDS` è l'ordine in cui i comandi compaiono nell'help.
 """
-from . import (
-    copy_panel,
-    duplicate_row,
-    lint,
-    list_panels,
-    list_rows,
-    move_panel,
-    prune,
-    reflow,
-    replace,
-    set_datasource,
-    transform,
-    validate,
-)
-from .append_row import command as append_row
-from .extract_row import command as extract_row
+from .create import command as create
+from .delete import command as delete
+from .extract import command as extract
+from .layout import command as layout
+from .lint import command as lint
+from .list import command as list_
+from .move import command as move
+from .update import command as update
+from .validate import command as validate
 
 ALL_COMMANDS = [
-    list_rows,
-    list_panels,
-    duplicate_row,
-    copy_panel,
-    move_panel,
-    replace,
-    transform,
-    prune,
-    set_datasource,
-    reflow,
+    list_,
+    create,
+    update,
+    delete,
+    move,
+    extract,
+    layout,
     validate,
     lint,
-    append_row,
-    extract_row,
 ]
+

@@ -1,17 +1,62 @@
-"""Responsabilità unica: opzioni CLI comuni ai comandi di scrittura.
+"""Responsabilità unica: opzioni CLI comuni ai comandi.
 
-Centralizza i flag condivisi da tutti i comandi che modificano e salvano
-la dashboard, incluso il contratto I/O e la validazione finale.
+Centralizza i flag condivisi da più comandi, così testo, default e
+`choices` esistono in un solo posto. Nessun comando ridefinisce a mano
+un'opzione che vive qui.
+
+Vocabolario delle opzioni, uguale per tutti i comandi che agiscono su un
+oggetto:
+
+  - **tipo**: argomento posizionale `row` oppure `panel`;
+  - **selettori** (`--id`, `--match-title`, `--match-type`, `--in-row`):
+    scelgono *quali* oggetti;
+  - **impostazioni** (`--title`, `--collapsed`, `--replace`, `--datasource`):
+    dicono *cosa* cambiare.
+
+La regola mnemonica è: `--match-*` seleziona, le altre opzioni impostano.
 """
 from __future__ import annotations
 
 import argparse
 
+FILE_HELP = "Percorso del file dashboard JSON (deve esistere)"
+SEVERITY_CHOICES = ("info", "warning", "error")
+KIND_CHOICES = ("row", "panel")
+FORMAT_CHOICES = ("text", "json")
+
+
+def add_file_argument(parser: argparse.ArgumentParser) -> None:
+    """Aggiunge l'argomento posizionale `file` (dashboard di input)."""
+    parser.add_argument("file", help=FILE_HELP)
+
+
+def add_kind_argument(parser: argparse.ArgumentParser) -> None:
+    """Aggiunge il tipo di oggetto: `row` oppure `panel`."""
+    parser.add_argument(
+        "kind", choices=list(KIND_CHOICES), metavar="{row,panel}",
+        help="Tipo di oggetto su cui operare: row (riga) o panel (pannello)",
+    )
+
+
+def add_severity_option(parser: argparse.ArgumentParser, help: str) -> None:
+    """Aggiunge `--severity`, la soglia di severità usata da validate/lint."""
+    parser.add_argument(
+        "--severity", choices=list(SEVERITY_CHOICES), default="error", help=help
+    )
+
+
+def add_format_option(parser: argparse.ArgumentParser) -> None:
+    """Aggiunge `--format text|json` ai comandi che stampano un elenco."""
+    parser.add_argument(
+        "--format", choices=list(FORMAT_CHOICES), default="text",
+        help="Formato di output (default: text)",
+    )
+
 
 def add_write_options(parser: argparse.ArgumentParser) -> None:
     """Aggiunge a `parser` le opzioni comuni dei comandi di scrittura:
 
-    -o/--output, --dry-run, --lint-severity.
+    -o/--output, --dry-run, --severity.
 
     Contratto I/O:
       - il file di input (argomento posizionale `file`) non viene MAI
@@ -30,13 +75,77 @@ def add_write_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Non scrive il file (la validazione gira comunque in memoria)")
-    parser.add_argument("--lint-severity", choices=["info", "warning", "error"],
-                        default="error",
-                        help="Soglia che fa fallire la validazione finale (default: error)")
+    add_severity_option(
+        parser, "Soglia che fa fallire la validazione finale (default: error)"
+    )
 
 
-def add_title_options(parser: argparse.ArgumentParser) -> None:
-    """Aggiunge `--dedupe-titles` ai comandi che creano righe o pannelli.
+def add_selectors(parser: argparse.ArgumentParser) -> None:
+    """Aggiunge i selettori comuni: chi viene toccato dal comando.
+
+    Gli stessi quattro selettori valgono per righe e pannelli; quelli che non
+    hanno senso per il tipo scelto vengono rifiutati a runtime con un
+    messaggio esplicito.
+    """
+    parser.add_argument(
+        "--id", type=int, action="append", default=[], metavar="N",
+        help="Seleziona l'oggetto con questo id (ripetibile)",
+    )
+    parser.add_argument(
+        "--match-title", metavar="REGEX",
+        help="Seleziona gli oggetti con titolo che matcha la regex (case-insensitive)",
+    )
+    parser.add_argument(
+        "--match-type", metavar="TIPO",
+        help="Seleziona i pannelli di questo tipo (es. timeseries)",
+    )
+    parser.add_argument(
+        "--in-row", type=int, metavar="N",
+        help="Limita ai pannelli della riga con questo id",
+    )
+
+
+def add_title_option(
+    parser: argparse.ArgumentParser, help: str = "Nuovo titolo dell'oggetto"
+) -> None:
+    """Aggiunge `--title` (imposta il titolo, non seleziona)."""
+    parser.add_argument("--title", help=help)
+
+
+def add_collapsed_options(
+    parser: argparse.ArgumentParser, *, default: bool | None = None
+) -> None:
+    """Aggiunge `--collapsed` / `--expanded` per lo stato di una riga."""
+    parser.add_argument(
+        "--collapsed", dest="collapsed", action="store_true", default=default,
+        help="Rendi la riga collassata",
+    )
+    parser.add_argument(
+        "--expanded", dest="collapsed", action="store_false",
+        help="Rendi la riga espansa (figli top-level subito dopo)",
+    )
+
+
+def add_replace_option(parser: argparse.ArgumentParser, help: str) -> None:
+    """Aggiunge `--replace OLD=NEW`, ripetibile."""
+    parser.add_argument(
+        "--replace", action="append", default=[], metavar="OLD=NEW", help=help
+    )
+
+
+def add_datasource_options(parser: argparse.ArgumentParser) -> None:
+    """Aggiunge le opzioni che agiscono sul blocco datasource."""
+    parser.add_argument("--datasource", metavar="UID",
+                        help="Imposta datasource.uid di pannelli e target")
+    parser.add_argument("--datasource-type", dest="datasource_type", metavar="TIPO",
+                        help="Imposta anche datasource.type (es. prometheus)")
+    parser.add_argument("--datasource-create", dest="datasource_create",
+                        action="store_true",
+                        help="Crea il blocco datasource quando è assente")
+
+
+def add_dedupe_option(parser: argparse.ArgumentParser) -> None:
+    """Aggiunge `--dedupe-titles` ai comandi che creano o rinominano oggetti.
 
     Il default è conservativo: i titoli degli oggetti creati restano identici
     alla sorgente. Con il flag vengono disambiguati rispetto ai titoli già
@@ -45,7 +154,7 @@ def add_title_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dedupe-titles", action="store_true",
         help=(
-            "Rendi unici i titoli degli oggetti creati: se il nome esiste già "
-            "nella dashboard aggiunge il suffisso (2), (3)"
+            "Rendi unico il titolo degli oggetti creati o rinominati: se il nome "
+            "esiste già nella dashboard aggiunge il suffisso (2), (3)"
         ),
     )

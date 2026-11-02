@@ -1,0 +1,6 @@
+timestamp: 2026-11-02T20:54:41
+type: COMMAND_ERROR
+command: update
+argv: update row /var/folders/mt/577rj6555hx1qhjh4fzg_mk40000gn/T/tmp.VoLk6JwvSG/vista.json --id 125 --title VISTA TEST --dedupe-titles -o /var/folders/mt/577rj6555hx1qhjh4fzg_mk40000gn/T/tmp.VoLk6JwvSG/step1.json
+exit_code: 1
+message: Nessuna riga con id 125.

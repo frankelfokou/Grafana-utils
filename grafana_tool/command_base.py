@@ -1,20 +1,20 @@
-"""command_base: WriteCommand — Template Method per comandi di scrittura.
+"""command_base: classi base dei comandi (Template Method).
 
-Fornisce la classe base astratta `WriteCommand` che incapsula lo scheletro
-comune a tutti i comandi di scrittura:
+Tutti i sottocomandi sono istanze di una di queste classi, così lo scheletro
+comune vive in un solo posto:
 
-    1. carica il dashboard di input (input mai modificato);
-    2. chiama il metodo astratto `modify` per la logica specifica;
-    3. salva e valida tramite `persist.save_and_validate`.
+    BaseCommand   — contratto uniforme (NAME, HELP, configure, run)
+      ReadCommand — carica la dashboard e chiama `perform` (nessuna scrittura)
+      WriteCommand — carica una copia, chiama `modify`, poi `save_and_validate`
 
-I comandi concreti ereditano da `WriteCommand` e implementano solo `modify`
-e `configure`. Questo elimina il boilerplate ripetuto in ogni modulo
-comando e centralizza il contratto I/O in un unico punto.
+I comandi concreti implementano solo gli hook:
 
-Le istanze di `WriteCommand` sono direttamente registrabili in
-`commands/__init__.py` come elementi di `ALL_COMMANDS`, perché espongono
-`NAME`, `HELP`, `configure(parser)` e `run(args)` con la stessa interfaccia
-dei moduli comando esistenti.
+    add_arguments(parser)   opzioni specifiche del comando
+    perform(db, args)       logica dei comandi read-only
+    modify(db, args)        trasformazione dei comandi di scrittura
+
+Vantaggio: input mai modificato, deep-copy, salvataggio e validazione finale
+esistono una volta sola; per cambiare il contratto I/O si tocca questo file.
 """
 from __future__ import annotations
 
@@ -22,13 +22,13 @@ import argparse
 import copy
 from typing import Any
 
-from grafana_tool.cli_common import add_write_options
+from grafana_tool.cli_common import add_file_argument, add_write_options
 from grafana_tool.io import load_dashboard
 from grafana_tool.persist import save_and_validate
 
 
-class WriteCommand:
-    """Classe base per comandi di scrittura (Template Method).
+class BaseCommand:
+    """Contratto uniforme dei sottocomandi.
 
     Attributi di classe:
         NAME  — nome del subparser
@@ -39,20 +39,63 @@ class WriteCommand:
     HELP: str = ""
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
-        """Aggiunge gli argomenti specifici e le opzioni comuni di scrittura."""
+        """Aggiunge le opzioni specifiche e poi quelle comuni della famiglia.
+
+        I comandi concreti non ridefiniscono questo metodo: implementano
+        `add_arguments`, così ordine e presenza delle opzioni comuni
+        restano uniformi.
+        """
+        self.add_arguments(parser)
+        self.add_common_options(parser)
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        """Hook: opzioni specifiche del comando."""
+
+    def add_common_options(self, parser: argparse.ArgumentParser) -> None:
+        """Hook: opzioni comuni alla famiglia del comando."""
+
+    def run(self, args: argparse.Namespace) -> int | None:
+        """Esegue il comando. Le sottoclassi ridefiniscono questo metodo."""
+        raise NotImplementedError
+
+
+class ReadCommand(BaseCommand):
+    """Comando che legge la dashboard senza produrre un file di output."""
+
+    def add_common_options(self, parser: argparse.ArgumentParser) -> None:
+        add_file_argument(parser)
+
+    def perform(self, db: dict[str, Any], args: argparse.Namespace) -> int | None:
+        """Hook: logica del comando sulla dashboard già caricata."""
+        raise NotImplementedError
+
+    def run(self, args: argparse.Namespace) -> int | None:
+        """Template method: load → perform."""
+        return self.perform(load_dashboard(args.file), args)
+
+
+class WriteCommand(BaseCommand):
+    """Comando che modifica la dashboard e produce un file di output."""
+
+    def add_common_options(self, parser: argparse.ArgumentParser) -> None:
+        add_file_argument(parser)
         add_write_options(parser)
 
     def modify(self, db: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-        """Applica la trasformazione specifica al dashboard in memoria.
+        """Hook: applica la trasformazione specifica al dashboard in memoria.
 
         Riceve una copia profonda del dashboard; può modificarlo e restituirlo.
         Il metodo base restituisce il dashboard invariato.
         """
         return db
 
+    def report_renamed(self, count: int) -> None:
+        """Messaggio unico per i titoli disambiguati da `--dedupe-titles`."""
+        if count:
+            print(f"Titoli pannelli disambiguati: {count}.")
+
     def run(self, args: argparse.Namespace) -> int:
-        """Template method: load → modify → save_and_validate."""
-        db = load_dashboard(args.file)
-        db = copy.deepcopy(db)
+        """Template method: load → deep-copy → modify → save_and_validate."""
+        db = copy.deepcopy(load_dashboard(args.file))
         db = self.modify(db, args)
         return save_and_validate(db, args)

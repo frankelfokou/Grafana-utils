@@ -10,7 +10,6 @@ from grafana_tool.identity import (
     id_range_collisions,
     new_uid,
     new_uid_not_in,
-    next_panel_id_base,
     parse_inventory,
     seal_new_dashboard,
     unique_title,
@@ -131,10 +130,6 @@ class SealNewDashboardTest(unittest.TestCase):
 
 
 class PanelIdTest(unittest.TestCase):
-    def test_next_panel_id_base(self):
-        self.assertEqual(next_panel_id_base(sample_dashboard()), 101)
-        self.assertEqual(next_panel_id_base({"panels": []}), 1)
-
     def test_id_range_collisions(self):
         db = sample_dashboard()
         self.assertEqual(id_range_collisions(db, 100, 3), [100])

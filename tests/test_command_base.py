@@ -1,12 +1,13 @@
-"""Test di `grafana_tool.command_base.WriteCommand` (Template Method)."""
+"""Test di `grafana_tool.command_base`: Template Method delle famiglie di comandi."""
 from __future__ import annotations
 
 import argparse
+import io
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
-from grafana_tool.command_base import WriteCommand
-from grafana_tool.cli_common import add_write_options
+from grafana_tool.command_base import ReadCommand, WriteCommand
 from tests.support import CLITestCase, panel
 
 
@@ -14,19 +15,65 @@ class DummyCommand(WriteCommand):
     NAME = "dummy"
     HELP = "comando di test"
 
-    def configure(self, parser):
-        parser.add_argument("file")
-        add_write_options(parser)
-
     def modify(self, db, args):
         db["modified"] = True
         return db
 
 
+class ReadDummyCommand(ReadCommand):
+    NAME = "read-dummy"
+    HELP = "comando di lettura di test"
+
+    def add_arguments(self, parser):
+        parser.add_argument("--note", default="")
+
+    def perform(self, db, args):
+        print(f"{len(db.get('panels') or [])} pannelli; note={args.note}")
+        return 0
+
+
+class ConfigureTest(unittest.TestCase):
+    """La classe base aggiunge da sola le opzioni comuni."""
+
+    def _parser(self, command) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(prog=command.NAME)
+        command.configure(parser)
+        return parser
+
+    def test_write_command_aggiunge_file_e_opzioni_comuni(self):
+        args = self._parser(DummyCommand()).parse_args(["x.json"])
+        self.assertEqual(args.file, "x.json")
+        self.assertIsNone(args.output)
+        self.assertFalse(args.dry_run)
+        self.assertEqual(args.severity, "error")
+
+    def test_read_command_aggiunge_solo_il_file(self):
+        args = self._parser(ReadDummyCommand()).parse_args(["x.json", "--note", "n"])
+        self.assertEqual(args.file, "x.json")
+        self.assertEqual(args.note, "n")
+        self.assertFalse(hasattr(args, "output"))
+        self.assertFalse(hasattr(args, "severity"))
+
+
+class ReadCommandTest(CLITestCase):
+    def test_run_carica_e_chiama_perform(self):
+        src = self.write_json("in.json", {"panels": [panel(1, "a"), panel(2, "b")]})
+        args = argparse.Namespace(file=src, note="x", cmd="read-dummy")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = ReadDummyCommand().run(args)
+        self.assertEqual(code, 0)
+        self.assertIn("2 pannelli; note=x", out.getvalue())
+
+    def test_perform_base_non_implementato(self):
+        with self.assertRaises(NotImplementedError):
+            ReadCommand().perform({}, None)
+
+
 class WriteCommandTest(CLITestCase):
     def _args(self, **kw):
         base = {"file": None, "output": None, "dry_run": False,
-                "lint_severity": "error", "cmd": "dummy"}
+                "severity": "error", "cmd": "dummy"}
         base.update(kw)
         return argparse.Namespace(**base)
 
@@ -67,6 +114,13 @@ class WriteCommandTest(CLITestCase):
         DummyCommand().run(self._args(file=src))
         self.assertTrue((self.tmp / "in_out.json").exists())
         self.assertTrue(Path(src).exists())
+
+    def test_report_renamed_stampa_solo_se_ce_ne_sono(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            DummyCommand().report_renamed(0)
+            DummyCommand().report_renamed(3)
+        self.assertEqual(out.getvalue().strip(), "Titoli pannelli disambiguati: 3.")
 
 
 if __name__ == "__main__":

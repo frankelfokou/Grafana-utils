@@ -5,28 +5,28 @@ import unittest
 
 from grafana_tool.model import (
     append_to_row_block,
-    collect_scope,
+    dashboard_roots,
     expanded_row_siblings,
     find_panel_container,
-    find_panel_parent_row,
     find_row,
-    find_row_by_title,
     find_row_container,
-    find_row_container_by_title,
     get_max_id,
     insert_row_after_block,
     iter_all_panels,
-    iter_content_panels,
+    iter_panel_slots,
     iter_panels,
-    iter_panels_with_parent,
     iter_rows,
     iter_rows_with_children,
     max_y,
     min_grid_y,
     remove_row_block,
     renumber_ids,
+    require_row,
+    row_block,
     row_children,
+    shift_dashboard_grid_y,
     shift_grid_y,
+    stack_grid_y,
 )
 from tests.support import legacy_dashboard, panel, row, sample_dashboard
 
@@ -62,9 +62,6 @@ class IterTest(unittest.TestCase):
     def test_iter_all_panels_include_le_righe(self):
         self.assertEqual(IDS(iter_all_panels(self.db)), [1, 2, 3, 5, 6, 7, 9, 100])
 
-    def test_iter_content_panels_esclude_le_righe(self):
-        self.assertEqual(IDS(iter_content_panels(self.db)), [2, 3, 6, 7, 100])
-
 
 class ExpandedRowTest(unittest.TestCase):
     """Una riga `collapsed: false` possiede i pannelli top-level che la seguono."""
@@ -99,22 +96,26 @@ class ExpandedRowTest(unittest.TestCase):
         pairs = {r["id"]: IDS(c) for r, c in iter_rows_with_children(self.db)}
         self.assertEqual(pairs, {1: [2, 3], 5: [6, 7], 9: []})
 
-    def test_iter_panels_with_parent_attribuisce_i_fratelli_alla_riga(self):
-        owner = {p["id"]: (r["id"] if r else None) for r, p in iter_panels_with_parent(self.db)}
-        self.assertEqual(
-            owner,
-            {100: None, 2: 1, 3: 1, 6: 5, 7: 5},
-        )
+    def test_iter_panel_slots_esclude_le_righe(self):
+        slots = list(iter_panel_slots(self.db))
+        self.assertEqual(IDS([s[2] for s in slots]), [2, 3, 6, 7, 100])
 
-    def test_iter_panels_with_parent_legacy(self):
+    def test_iter_panel_slots_indica_contenitore_e_riga(self):
+        by_id = {s[2]["id"]: s for s in iter_panel_slots(self.db)}
+        container, idx, panel, row_of = by_id[2]
+        self.assertIs(container[idx], panel)
+        self.assertEqual(row_of["id"], 1)
+        self.assertEqual(by_id[6][3]["id"], 5)      # fratello di riga espansa
+        self.assertIsNone(by_id[100][3])            # top-level fuori riga
+
+    def test_iter_panel_slots_scende_nei_pannelli_annidati(self):
+        db = {"panels": [panel(1, "g", typ="group", panels=[panel(2, "a")])]}
+        self.assertEqual(IDS([s[2] for s in iter_panel_slots(db)]), [1, 2])
+
+    def test_iter_panel_slots_legacy(self):
         db = legacy_dashboard()
-        pairs = list(iter_panels_with_parent(db))
-        self.assertEqual([(r["id"], p["id"]) for r, p in pairs], [(1, 2)])
-
-    def test_find_panel_parent_row(self):
-        self.assertEqual(find_panel_parent_row(self.db, 2)["id"], 1)
-        self.assertEqual(find_panel_parent_row(self.db, 6)["id"], 5)
-        self.assertIsNone(find_panel_parent_row(self.db, 100))
+        self.assertEqual([s[2]["id"] for s in iter_panel_slots(db)], [2])
+        self.assertEqual([s[3]["id"] for s in iter_panel_slots(db)], [1])
 
 
 class FindTest(unittest.TestCase):
@@ -144,14 +145,6 @@ class FindTest(unittest.TestCase):
     def test_find_panel_container_inesistente(self):
         self.assertEqual(find_panel_container(self.db, 999), (None, -1))
 
-    def test_find_row_by_title_case_insensitive(self):
-        self.assertEqual(find_row_by_title(self.db, "row b")["id"], 5)
-
-    def test_find_row_container_by_title_ritorna_tre_valori(self):
-        container, idx, r = find_row_container_by_title(self.db, "Row A")
-        self.assertEqual((container is self.db["panels"], idx, r["id"]), (True, 1, 1))
-        self.assertEqual(find_row_container_by_title(self.db, "assente"), (None, -1, None))
-
     def test_get_max_id(self):
         self.assertEqual(get_max_id(self.db), 100)
         self.assertEqual(get_max_id({}), 0)
@@ -160,19 +153,6 @@ class FindTest(unittest.TestCase):
 class ScopeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.db = sample_dashboard()
-
-    def test_collect_scope_intera_dashboard(self):
-        self.assertEqual(IDS(collect_scope(self.db, None)), [2, 3, 6, 7, 100])
-
-    def test_collect_scope_riga_collassata(self):
-        self.assertEqual(IDS(collect_scope(self.db, 1)), [2, 3])
-
-    def test_collect_scope_riga_espansa(self):
-        self.assertEqual(IDS(collect_scope(self.db, 5)), [6, 7])
-
-    def test_collect_scope_riga_inesistente(self):
-        with self.assertRaises(ValueError):
-            collect_scope(self.db, 999)
 
     def test_max_y(self):
         self.db["panels"][3]["gridPos"] = {"h": 5, "y": 10}
@@ -253,6 +233,55 @@ class GridTest(unittest.TestCase):
         p["gridPos"]["y"] = 3
         shift_grid_y([p], 0)
         self.assertEqual(p["gridPos"]["y"], 3)
+
+
+class ResolveTest(unittest.TestCase):
+    """Helper condivisi che evitano la stessa ricerca in ogni comando."""
+
+    def setUp(self) -> None:
+        self.db = sample_dashboard()
+
+    def test_require_row_ritorna_la_riga(self):
+        self.assertEqual(require_row(self.db, 1)["title"], "Row A")
+
+    def test_require_row_solleva_se_assente(self):
+        with self.assertRaises(ValueError) as ctx:
+            require_row(self.db, 999)
+        self.assertIn("Riga 999 non trovata.", str(ctx.exception))
+
+    def test_row_block_ritorna_contenitore_indice_riga(self):
+        container, idx, r = row_block(self.db, 5)
+        self.assertEqual(r["id"], 5)
+        self.assertIs(container[idx], r)
+
+    def test_row_block_riga_assente(self):
+        with self.assertRaises(ValueError):
+            row_block(self.db, 999)
+
+
+class GridHelpersTest(unittest.TestCase):
+    def test_dashboard_roots_unisce_panels_e_rows_senza_duplicati(self):
+        r = row(1, "R", panels=[])
+        db = {"panels": [r], "rows": [r]}
+        self.assertEqual([x["id"] for x in dashboard_roots(db)], [1])
+
+    def test_shift_dashboard_grid_y_include_figli_annidati(self):
+        db = sample_dashboard()
+        db["panels"][1]["gridPos"]["y"] = 4
+        db["panels"][1]["panels"][0]["gridPos"]["y"] = 5
+        shift_dashboard_grid_y(db, 2)
+        self.assertEqual(db["panels"][1]["gridPos"]["y"], 6)
+        self.assertEqual(db["panels"][1]["panels"][0]["gridPos"]["y"], 7)
+
+    def test_stack_grid_y_accoda_e_ritorna_l_altezza(self):
+        panels = [panel(1), panel(2)]
+        panels[0]["gridPos"]["h"] = 3
+        panels[1]["gridPos"]["h"] = 2
+        self.assertEqual(stack_grid_y(panels, 1), 5)
+        self.assertEqual([p["gridPos"]["y"] for p in panels], [1, 4])
+
+    def test_stack_grid_y_su_lista_vuota(self):
+        self.assertEqual(stack_grid_y([], 6), 1)
 
 
 if __name__ == "__main__":

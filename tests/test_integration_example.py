@@ -46,7 +46,7 @@ class ProductionDashboardTest(CLITestCase):
         self.assertEqual(figli[0]["title"], "POD RESTART")
 
     def test_list_rows_conta_i_pannelli_della_riga_espansa(self):
-        code, out, _ = self.run_cli("list-rows", str(PRODUCTION_DASHBOARD))
+        code, out, _ = self.run_cli("list", "row", str(PRODUCTION_DASHBOARD))
         self.assertEqual(code, 0)
         linea = next(line for line in out.splitlines() if str(ROW_ID) in line)
         self.assertIn("16", linea)
@@ -56,8 +56,8 @@ class ProductionDashboardTest(CLITestCase):
         before = digest(PRODUCTION_DASHBOARD)
 
         code, stdout, _ = self.run_cli(
-            "extract-row", "--from-dashboard", str(PRODUCTION_DASHBOARD),
-            "--row-match", "Sistemistica", "-o", out,
+            "extract", "row", str(PRODUCTION_DASHBOARD),
+            "--match-title", "Sistemistica", "-o", out,
         )
         self.assertEqual(code, 0, stdout)
         self.assertEqual(digest(PRODUCTION_DASHBOARD), before, "l'input non deve cambiare")
@@ -99,21 +99,23 @@ class ProductionDashboardTest(CLITestCase):
 
     def test_la_dashboard_estratta_valida(self):
         out = self.tmp / "sistemistica.json"
-        self.run_cli("extract-row", "--from-dashboard", str(PRODUCTION_DASHBOARD), "-o", out)
+        self.run_cli("extract", "row", str(PRODUCTION_DASHBOARD),
+                     "--match-title", "Sistemistica", "-o", out)
         code, stdout, _ = self.run_cli("validate", str(out))
         self.assertEqual(code, 0, stdout)
         self.assertNotIn("FALLITA", stdout)
 
-    def test_extract_con_row_id(self):
+    def test_extract_con_id(self):
         out = self.tmp / "per-id.json"
-        code, _, _ = self.run_cli("extract-row", "--from-dashboard", str(PRODUCTION_DASHBOARD),
-                                  "--row-id", str(ROW_ID), "-o", out)
+        code, _, _ = self.run_cli("extract", "row", str(PRODUCTION_DASHBOARD),
+                                  "--id", str(ROW_ID), "-o", out)
         self.assertEqual(code, 0)
         self.assertEqual(len(self.read_json(out)["panels"]), 17)
 
     def test_la_dashboard_estratta_ha_i_pannelli_attesi_per_titolo(self):
         out = self.tmp / "sistemistica.json"
-        self.run_cli("extract-row", "--from-dashboard", str(PRODUCTION_DASHBOARD), "-o", out)
+        self.run_cli("extract", "row", str(PRODUCTION_DASHBOARD),
+                     "--match-title", "Sistemistica", "-o", out)
         titoli = [p.get("title") for p in self.read_json(out)["panels"][1:]]
         for atteso in ("POD RESTART", "TOTAL POD NUMBER", "Mem % Usage", "Pod CPU% Usage"):
             self.assertIn(atteso, titoli)
@@ -121,26 +123,25 @@ class ProductionDashboardTest(CLITestCase):
     def test_replace_limitato_alla_row_sistemistica(self):
         out = self.tmp / "replace.json"
         code, stdout, _ = self.run_cli(
-            "replace", str(PRODUCTION_DASHBOARD),
-            "--replace", 'cluster_gen="2"=cluster_gen="3"',
-            "--row", str(ROW_ID), "-o", out,
+            "update", "row", str(PRODUCTION_DASHBOARD),
+            "--id", str(ROW_ID),
+            "--replace", 'cluster_gen="2"=cluster_gen="3"', "-o", out,
         )
         self.assertEqual(code, 0, stdout)
-        sostituzioni = int(stdout.split("applicate a ")[1].split(" target")[0])
-        self.assertGreater(sostituzioni, 0)
+        self.assertIn("modifiche al contenuto", stdout)
         db = self.read_json(out)
         self.assertIn('cluster_gen=\\"3\\"', json.dumps(db))
 
-    def test_duplicate_row_della_row_espansa(self):
+    def test_create_row_dalla_row_espansa(self):
         out = self.tmp / "dup.json"
-        code, stdout, _ = self.run_cli("duplicate-row", str(PRODUCTION_DASHBOARD),
-                                       "--source", str(ROW_ID), "-o", out)
+        code, stdout, _ = self.run_cli("create", "row", str(PRODUCTION_DASHBOARD),
+                                       "--from-id", str(ROW_ID), "-o", out)
         self.assertEqual(code, 0, stdout)
         self.assertIn("con 16 pannelli", stdout)
         db = self.read_json(out)
         copia = db["panels"][-1]
-        self.assertTrue(copia["title"].endswith("_COPY"))
         self.assertEqual(len(copia["panels"]), 16)
+        self.assertTrue(copia["collapsed"])
 
     def test_validate_dashboard_di_produzione(self):
         code, out, _ = self.run_cli("validate", str(PRODUCTION_DASHBOARD))

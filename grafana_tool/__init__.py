@@ -16,4 +16,4 @@ Struttura del pacchetto:
     __main__.py      → entry point per `python -m grafana_tool`
 """
 
-__version__ = "3.1.0"
+__version__ = "5.0.0"

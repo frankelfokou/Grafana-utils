@@ -11,7 +11,7 @@ from tests.support import CLITestCase, panel, row
 
 def ns(**kw) -> argparse.Namespace:
     base = {"file": "in.json", "output": None, "dry_run": False,
-            "lint_severity": "error", "cmd": "test"}
+            "severity": "error", "cmd": "test"}
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -61,7 +61,7 @@ class SaveAndValidateTest(CLITestCase):
         path = self._input()
         out = self.tmp / "out.json"
         code = persist.save_and_validate({"panels": [panel(1)]},  # MISSING_TITLE warning
-                                         ns(file=path, output=str(out), lint_severity="warning"))
+                                         ns(file=path, output=str(out), severity="warning"))
         self.assertEqual(code, 1)
         self.assertTrue((self.tmp / "out_ERROR_LINT_ERROR.json").exists())
         self.assertEqual(len(self.logs("lint")), 1)

@@ -33,7 +33,7 @@ def save_and_validate(db: dict[str, Any], args: argparse.Namespace) -> int:
     """
     out = resolve_output(args)
     dry_run = bool(getattr(args, "dry_run", False))
-    threshold = getattr(args, "lint_severity", "error")
+    threshold = getattr(args, "severity", "error")
 
     io.save_dashboard(db, out, dry_run=dry_run)
 
@@ -63,9 +63,7 @@ def save_and_validate(db: dict[str, Any], args: argparse.Namespace) -> int:
         f"validazione fallita per {os.path.basename(out)}",
         command=getattr(args, "cmd", None),
         exit_code=1,
-        details=result.errors + [
-            f"[{i.code}] {i.severity}: {i.message}" for i in result.blocking
-        ],
+        details=validation.failure_details(result),
     )
 
     if renamed:

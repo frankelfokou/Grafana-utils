@@ -1,4 +1,4 @@
-"""Test dei comandi read-only: list-rows, list-panels, validate, lint."""
+"""Test dei comandi read-only: `list`, `validate`, `lint`."""
 from __future__ import annotations
 
 import json
@@ -7,10 +7,10 @@ import unittest
 from tests.support import CLITestCase, panel, row, sample_dashboard
 
 
-class ListRowsTest(CLITestCase):
+class ListRowTest(CLITestCase):
     def test_elenca_le_righe(self):
         src = self.write_json("in.json", sample_dashboard())
-        code, out, _ = self.run_cli("list-rows", src)
+        code, out, _ = self.run_cli("list", "row", src)
         self.assertEqual(code, 0)
         self.assertIn("Titolo", out)
         self.assertIn("Row A", out)
@@ -19,14 +19,14 @@ class ListRowsTest(CLITestCase):
 
     def test_conta_i_pannelli_delle_righe_espanse(self):
         src = self.write_json("in.json", sample_dashboard())
-        _, out, _ = self.run_cli("list-rows", src)
+        _, out, _ = self.run_cli("list", "row", src)
         riga_b = next(line for line in out.splitlines() if "Row B" in line)
         # Row B è espansa: i pannelli 6 e 7 sono top-level ma le appartengono
         self.assertEqual(riga_b.split()[-2:], ["2", "False"])
 
     def test_dashboard_senza_righe(self):
         src = self.write_json("in.json", {"panels": [panel(1, "a")]})
-        code, out, _ = self.run_cli("list-rows", src)
+        code, out, _ = self.run_cli("list", "row", src)
         self.assertEqual(code, 0)
         self.assertIn("Nessuna riga trovata.", out)
 
@@ -34,22 +34,49 @@ class ListRowsTest(CLITestCase):
         r = row(1, "")
         r.pop("title")
         src = self.write_json("in.json", {"panels": [r]})
-        _, out, _ = self.run_cli("list-rows", src)
+        _, out, _ = self.run_cli("list", "row", src)
         self.assertIn("(senza titolo)", out)
 
+    def test_filtro_per_id(self):
+        src = self.write_json("in.json", sample_dashboard())
+        _, out, _ = self.run_cli("list", "row", src, "--id", "9")
+        self.assertIn("Row Empty", out)
+        self.assertNotIn("Row A", out)
 
-class ListPanelsTest(CLITestCase):
+    def test_filtro_per_titolo_case_insensitive(self):
+        src = self.write_json("in.json", sample_dashboard())
+        _, out, _ = self.run_cli("list", "row", src, "--match-title", "row a")
+        self.assertIn("Row A", out)
+        self.assertNotIn("Row B", out)
+
+    def test_json(self):
+        src = self.write_json("in.json", sample_dashboard())
+        code, out, _ = self.run_cli("list", "row", src, "--format", "json")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual([r["id"] for r in payload], [1, 5, 9])
+        self.assertEqual(payload[1]["panel_count"], 2)
+        self.assertFalse(payload[1]["collapsed"])
+
+
+class ListPanelTest(CLITestCase):
     def test_elenca_tutti_i_pannelli_con_la_riga(self):
         src = self.write_json("in.json", sample_dashboard())
-        code, out, _ = self.run_cli("list-panels", src)
+        code, out, _ = self.run_cli("list", "panel", src)
         self.assertEqual(code, 0)
         self.assertIn("- [100] text: NOTE  (nessuna riga)", out)
         self.assertIn("- [2] timeseries: A1  (riga 1)", out)
         self.assertIn("- [6] timeseries: B1  (riga 5)", out)
 
+    def test_le_righe_non_compaiono(self):
+        src = self.write_json("in.json", sample_dashboard())
+        _, out, _ = self.run_cli("list", "panel", src)
+        self.assertNotIn("[5]", out)
+        self.assertNotIn("[1] timeseries", out)
+
     def test_filtro_per_riga_espansa(self):
         src = self.write_json("in.json", sample_dashboard())
-        code, out, _ = self.run_cli("list-panels", src, "--row", "5")
+        code, out, _ = self.run_cli("list", "panel", src, "--in-row", "5")
         self.assertEqual(code, 0)
         self.assertIn("[6]", out)
         self.assertIn("[7]", out)
@@ -58,24 +85,45 @@ class ListPanelsTest(CLITestCase):
 
     def test_riga_vuota(self):
         src = self.write_json("in.json", sample_dashboard())
-        code, out, _ = self.run_cli("list-panels", src, "--row", "9")
+        code, out, _ = self.run_cli("list", "panel", src, "--in-row", "9")
         self.assertEqual(code, 0)
         self.assertIn("Nessun pannello trovato.", out)
 
     def test_riga_inesistente(self):
         src = self.write_json("in.json", sample_dashboard())
-        code, _, err = self.run_cli("list-panels", src, "--row", "999")
+        code, _, err = self.run_cli("list", "panel", src, "--in-row", "999")
         self.assertEqual(code, 1)
         self.assertIn("non trovata", err)
         self.assertEqual(len(self.logs("command")), 1)
+
+    def test_filtro_per_tipo(self):
+        src = self.write_json("in.json", sample_dashboard())
+        _, out, _ = self.run_cli("list", "panel", src, "--match-type", "text")
+        self.assertIn("[100]", out)
+        self.assertNotIn("[2]", out)
 
     def test_expr_troncata(self):
         p = panel(1, "lunga")
         p["targets"][0]["expr"] = "x" * 200
         src = self.write_json("in.json", {"panels": [p]})
-        _, out, _ = self.run_cli("list-panels", src)
+        _, out, _ = self.run_cli("list", "panel", src)
         self.assertIn("...", out)
         self.assertNotIn("x" * 150, out)
+
+    def test_json(self):
+        src = self.write_json("in.json", sample_dashboard())
+        code, out, _ = self.run_cli("list", "panel", src, "--format", "json")
+        self.assertEqual(code, 0)
+        by_id = {p["id"]: p for p in json.loads(out)}
+        self.assertEqual(by_id[6]["row_id"], 5)
+        self.assertIsNone(by_id[100]["row_id"])
+        self.assertEqual(by_id[100]["type"], "text")
+
+    def test_id_di_una_riga(self):
+        src = self.write_json("in.json", sample_dashboard())
+        code, _, err = self.run_cli("list", "panel", src, "--id", "1")
+        self.assertEqual(code, 1)
+        self.assertIn("usare il tipo `row`", err)
 
 
 class ValidateTest(CLITestCase):

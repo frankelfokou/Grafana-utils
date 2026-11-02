@@ -23,6 +23,22 @@ SEV_ORDER = {"info": 1, "warning": 2, "error": 3}
 SEV_LABEL = {"info": "INFO", "warning": "WARN", "error": "ERR"}
 
 
+def blocking_issues(issues: list[Issue], threshold: str) -> list[Issue]:
+    """Issue con severità pari o superiore alla soglia."""
+    limit = SEV_ORDER[threshold]
+    return [i for i in issues if SEV_ORDER[i.severity] >= limit]
+
+
+def issue_lines(issues: list[Issue]) -> list[str]:
+    """Righe di dettaglio per il log, nello stesso formato del report."""
+    return [f"[{i.code}] {i.severity}: {i.message}" for i in issues]
+
+
+def failure_details(result: "Result") -> list[str]:
+    """Dettagli da registrare nel log quando `result` è fallita."""
+    return list(result.errors) + issue_lines(result.blocking)
+
+
 @dataclass
 class Result:
     """Esito della validazione di una dashboard."""
@@ -34,8 +50,7 @@ class Result:
     @property
     def blocking(self) -> list[Issue]:
         """Issue che superano la soglia configurata."""
-        limit = SEV_ORDER[self.threshold]
-        return [i for i in self.issues if SEV_ORDER[i.severity] >= limit]
+        return blocking_issues(self.issues, self.threshold)
 
     @property
     def failing(self) -> bool:

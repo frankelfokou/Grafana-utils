@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import secrets
 import string
-from typing import Any, Iterable, Iterator, NamedTuple
+from typing import Any, Iterable, NamedTuple
 
 from grafana_tool.model import iter_all_panels, iter_panels
 
@@ -49,11 +49,33 @@ def new_uid(length: int = UID_LENGTH) -> str:
 
 def new_uid_not_in(taken: Iterable[str], length: int = UID_LENGTH) -> str:
     """Genera un uid che non compare in `taken` (confronto case-insensitive)."""
-    used = {str(u).casefold() for u in taken if u}
+    used = _folded(taken)
     while True:
         candidate = new_uid(length)
         if candidate.casefold() not in used:
             return candidate
+
+
+def text_or_empty(value: Any) -> str:
+    """Stringa ripulita, oppure `""` se il valore non è testo."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def extend_text(target: set[str], value: Any) -> None:
+    """Aggiunge `value` a `target` se è testo non vuoto."""
+    text = text_or_empty(value)
+    if text:
+        target.add(text)
+
+
+def _folded(values: Iterable[str]) -> set[str]:
+    """Insieme dei valori non vuoti in forma case-insensitive."""
+    return {str(v).casefold() for v in values if v}
+
+
+def _normalized(values: Iterable[str]) -> set[str]:
+    """Insieme dei titoli non vuoti in forma di confronto."""
+    return {normalize_title(v) for v in values if v}
 
 
 def normalize_title(title: Any) -> str:
@@ -64,7 +86,7 @@ def normalize_title(title: Any) -> str:
 def unique_title(base: str, taken: Iterable[str], start: int = 2) -> str:
     """Restituisce `base` se libero, altrimenti `base (n)` con n minimo libero."""
     clean = " ".join(str(base or "").split()) or "Senza titolo"
-    used = {normalize_title(t) for t in taken if t}
+    used = _normalized(taken)
     if normalize_title(clean) not in used:
         return clean
     n = start
@@ -83,18 +105,6 @@ def all_titles(db: dict[str, Any]) -> list[str]:
     return out
 
 
-def panel_titles(db: dict[str, Any]) -> list[str]:
-    """Titoli non vuoti dei soli pannelli di contenuto (righe escluse)."""
-    out: list[str] = []
-    for p in iter_all_panels(db):
-        if p.get("type") == "row":
-            continue
-        t = p.get("title")
-        if isinstance(t, str) and t.strip():
-            out.append(t)
-    return out
-
-
 def dedupe_panel_titles(
     panels: Iterable[dict[str, Any]], taken: Iterable[str] = ()
 ) -> int:
@@ -104,7 +114,7 @@ def dedupe_panel_titles(
     crea. I pannelli senza titolo restano senza. Ritorna quanti titoli sono
     stati riscritti.
     """
-    used = {normalize_title(t) for t in taken if t}
+    used = _normalized(taken)
     renamed = 0
     for p in panels:
         for sub in iter_panels([p]):
@@ -119,14 +129,6 @@ def dedupe_panel_titles(
                 sub["title"] = new
                 renamed += 1
     return renamed
-
-
-def iter_library_panels(db: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """Pannelli che puntano a una libreria condivisa (`libraryPanel.uid`)."""
-    for p in iter_all_panels(db):
-        lp = p.get("libraryPanel")
-        if isinstance(lp, dict) and lp.get("uid"):
-            yield p
 
 
 def parse_inventory(data: Any) -> tuple[set[str], set[str]]:
@@ -151,12 +153,8 @@ def parse_inventory(data: Any) -> tuple[set[str], set[str]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        uid = item.get("uid")
-        title = item.get("title")
-        if isinstance(uid, str) and uid.strip():
-            uids.add(uid.strip())
-        if isinstance(title, str) and title.strip():
-            titles.add(title.strip())
+        extend_text(uids, item.get("uid"))
+        extend_text(titles, item.get("title"))
     return uids, titles
 
 
@@ -178,7 +176,7 @@ def seal_new_dashboard(
     - `title`: quello richiesto o quello corrente, reso unico rispetto a
       `taken_titles` con il suffisso ` (2)`, ` (3)`.
     """
-    used_uids = {str(u).casefold() for u in taken_uids if u}
+    used_uids = _folded(taken_uids)
     if uid is not None:
         candidate = str(uid).strip()
         if not candidate:
@@ -197,16 +195,6 @@ def seal_new_dashboard(
     db["version"] = 1
     db["title"] = final_title
     return DashboardIdentity(uid=candidate, title=final_title)
-
-
-def next_panel_id_base(db: dict[str, Any]) -> int:
-    """Primo id libero dopo il massimo id della dashboard."""
-    m = 0
-    for p in iter_all_panels(db):
-        pid = p.get("id")
-        if isinstance(pid, int) and pid > m:
-            m = pid
-    return m + 1
 
 
 def id_range_collisions(db: dict[str, Any], base: int, count: int) -> list[int]:

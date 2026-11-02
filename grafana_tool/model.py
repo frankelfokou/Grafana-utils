@@ -9,6 +9,30 @@ from __future__ import annotations
 import re
 from typing import Any, Iterator
 
+def _is_row(key: str, item: dict[str, Any]) -> bool:
+    """Vero se `item` è una riga.
+
+    Nella lista legacy `rows` ogni elemento è una riga; nella lista `panels`
+    lo è solo chi ha `type: "row"`. Regola unica per tutti gli attraversamenti.
+    """
+    return key == "rows" or item.get("type") == "row"
+
+
+def dashboard_roots(db: dict[str, Any]) -> list[dict[str, Any]]:
+    """Elementi top-level delle liste `panels` e `rows`, senza duplicati."""
+    roots: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for key in ("panels", "rows"):
+        container = db.get(key)
+        if not isinstance(container, list):
+            continue
+        for item in container:
+            if isinstance(item, dict) and id(item) not in seen:
+                seen.add(id(item))
+                roots.append(item)
+    return roots
+
+
 def iter_panels(panels: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
     """Itera ricorsivamente tutti i pannelli, inclusi quelli annidati."""
     for p in panels:
@@ -30,7 +54,7 @@ def iter_rows(db: dict[str, Any]) -> Iterator[dict[str, Any]]:
             if not isinstance(item, dict) or id(item) in seen:
                 continue
             seen.add(id(item))
-            if key == "rows" or item.get("type") == "row":
+            if _is_row(key, item):
                 yield item
 
 def iter_all_panels(db: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -40,24 +64,12 @@ def iter_all_panels(db: dict[str, Any]) -> Iterator[dict[str, Any]]:
     Un pannello presente sia in `panels` sia in `rows` viene restituito una
     sola volta.
     """
-    roots: list[dict[str, Any]] = []
-    for key in ("panels", "rows"):
-        v = db.get(key)
-        if isinstance(v, list):
-            roots.extend(x for x in v if isinstance(x, dict))
     seen: set[int] = set()
-    for p in iter_panels(roots):
+    for p in iter_panels(dashboard_roots(db)):
         if id(p) in seen:
             continue
         seen.add(id(p))
         yield p
-
-
-def iter_content_panels(db: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """Itera i soli pannelli di contenuto, escludendo i contenitori riga."""
-    for p in iter_all_panels(db):
-        if p.get("type") != "row":
-            yield p
 
 
 def _container_index(container: list[Any], target: Any) -> int:
@@ -120,37 +132,53 @@ def iter_rows_with_children(
         yield row, row_children(db, row)
 
 
-def iter_panels_with_parent(
+def iter_panel_slots(
     db: dict[str, Any],
-) -> Iterator[tuple[dict[str, Any] | None, dict[str, Any]]]:
-    """Itera `(riga, pannello)` per ogni pannello di contenuto.
+) -> Iterator[
+    tuple[list[dict[str, Any]], int, dict[str, Any], dict[str, Any] | None]
+]:
+    """Itera `(contenitore, indice, pannello, riga)` per ogni pannello di contenuto.
 
-    `riga` è il contenitore `type=row` che ospita il pannello, oppure None
-    per i pannelli top-level che non appartengono a una riga espansa.
+    `riga` è la riga che possiede il pannello: quella che lo contiene, oppure
+    la riga espansa di cui il pannello è fratello top-level. Le righe non
+    vengono restituite. È l'attraversamento unico usato da `objects.py` per
+    selezionare, elencare, spostare e rimuovere i pannelli.
     """
-    seen: set[int] = set()
-    row_objects = {id(r) for r in iter_rows(db)}
-
+    owners: dict[int, dict[str, Any]] = {}
     for row, children in iter_rows_with_children(db):
         for child in children:
-            if not isinstance(child, dict):
-                continue
-            for sub in iter_panels([child]):
-                if id(sub) in seen:
-                    continue
-                seen.add(id(sub))
-                yield row, sub
+            if isinstance(child, dict):
+                owners[id(child)] = row
 
-    for key in ("panels", "rows"):
-        container = db.get(key)
-        if not isinstance(container, list):
-            continue
-        for p in iter_panels([x for x in container if isinstance(x, dict)]):
-            # le righe legacy possono non avere `type`: le riconosciamo per identità
-            if p.get("type") == "row" or id(p) in row_objects or id(p) in seen:
+    seen: set[int] = set()
+
+    def walk(
+        container: list[dict[str, Any]], row: dict[str, Any] | None
+    ) -> Iterator[
+        tuple[list[dict[str, Any]], int, dict[str, Any], dict[str, Any] | None]
+    ]:
+        for i, item in enumerate(container):
+            if not isinstance(item, dict) or id(item) in seen:
                 continue
-            seen.add(id(p))
-            yield None, p
+            if item.get("type") == "row":
+                nested = item.get("panels")
+                if isinstance(nested, list):
+                    yield from walk(nested, item)
+                continue
+            seen.add(id(item))
+            yield container, i, item, owners.get(id(item), row)
+            nested = item.get("panels")
+            if isinstance(nested, list):
+                yield from walk(nested, row)
+
+    top = db.get("panels")
+    if isinstance(top, list):
+        yield from walk(top, None)
+    # Lo schema legacy tiene le righe e i loro figli fuori da `panels`.
+    for row in iter_rows(db):
+        nested = row.get("panels")
+        if isinstance(nested, list):
+            yield from walk(nested, row)
 
 
 def find_row_container(
@@ -164,8 +192,7 @@ def find_row_container(
         for i, item in enumerate(container):
             if not isinstance(item, dict) or item.get("id") != row_id:
                 continue
-            # nella lista `panels` solo i type=row sono righe
-            if key == "rows" or item.get("type") == "row":
+            if _is_row(key, item):
                 return container, i
     return None, -1
 
@@ -177,41 +204,27 @@ def find_row(db: dict[str, Any], row_id: int) -> dict[str, Any] | None:
             return r
     return None
 
+
+def require_row(db: dict[str, Any], row_id: int, *, where: str = "") -> dict[str, Any]:
+    """Come `find_row`, ma solleva `ValueError` se la riga non esiste."""
+    row = find_row(db, row_id)
+    if row is None:
+        raise ValueError(f"Riga {row_id} non trovata{where}.")
+    return row
+
 def find_panel_container(
     db: dict[str, Any], panel_id: int
 ) -> tuple[list[dict[str, Any]] | None, int]:
     """Ritorna (lista_contenitrice, indice) del pannello, oppure (None, -1).
 
-    La lista contenitrice può essere:
-      - `db["panels"]` o `db["rows"]` se il pannello è top-level
-      - la `panels` di una riga se il pannello è annidato
+    La lista contenitrice può essere `db["panels"]`, `db["rows"]`, le
+    `panels` di una riga o di un pannello annidato.
     """
-    for key in ("panels", "rows"):
-        container = db.get(key)
-        if not isinstance(container, list):
-            continue
-        for i, item in enumerate(container):
-            if not isinstance(item, dict):
-                continue
-            if item.get("id") == panel_id:
-                return container, i
-            nested = item.get("panels")
-            if isinstance(nested, list):
-                for j, np in enumerate(nested):
-                    if isinstance(np, dict) and np.get("id") == panel_id:
-                        return nested, j
+    for container, idx, panel, _ in iter_panel_slots(db):
+        if panel.get("id") == panel_id:
+            return container, idx
     return None, -1
 
-def find_panel_parent_row(db: dict[str, Any], panel_id: int) -> dict[str, Any] | None:
-    """Ritorna la riga che contiene il pannello, o None se è top-level."""
-    for row, children in iter_rows_with_children(db):
-        for child in children:
-            if not isinstance(child, dict):
-                continue
-            for sub in iter_panels([child]):
-                if sub.get("id") == panel_id:
-                    return row
-    return None
 
 def get_max_id(db: dict[str, Any]) -> int:
     """Ritorna l'ID massimo presente tra i pannelli (0 se nessuno)."""
@@ -221,23 +234,6 @@ def get_max_id(db: dict[str, Any]) -> int:
         if isinstance(i, int) and i > m:
             m = i
     return m
-
-def collect_scope(db: dict[str, Any], row_id: int | None) -> list[dict[str, Any]]:
-    """Ritorna la lista piatta dei pannelli di contenuto su cui operare.
-
-    Se `row_id` è None restituisce l'intera dashboard; altrimenti solo i
-    pannelli della riga indicata. Le righe sono escluse: sono contenitori,
-    non pannelli. Solleva ValueError se la riga non esiste.
-    """
-    if row_id is None:
-        return list(iter_content_panels(db))
-    row = find_row(db, row_id)
-    if row is None:
-        raise ValueError(f"Riga {row_id} non trovata.")
-    return [
-        p for p in iter_panels(row_children(db, row))
-        if p.get("type") != "row"
-    ]
 
 
 def max_y(db: dict[str, Any]) -> int:
@@ -261,43 +257,43 @@ def title_regex(pattern: str) -> "re.Pattern[str]":
     return re.compile(pattern, re.IGNORECASE)
 
 
-def find_row_container_by_title(
-    db: dict[str, Any], pattern: str
-) -> tuple[list[dict[str, Any]] | None, int, dict[str, Any] | None]:
-    """Trova (contenitore, indice, riga) per la prima riga il cui titolo matcha `pattern`."""
-    rx = title_regex(pattern)
-    for key in ("panels", "rows"):
-        container = db.get(key)
-        if not isinstance(container, list):
-            continue
-        for i, item in enumerate(container):
-            if isinstance(item, dict) and item.get("type") == "row":
-                if rx.search(item.get("title") or ""):
-                    return container, i, item
-    return None, -1, None
-
-
-def find_row_by_title(db: dict[str, Any], pattern: str) -> dict[str, Any] | None:
-    """Trova la prima riga il cui titolo matcha `pattern` (case-insensitive)."""
-    _, _, row = find_row_container_by_title(db, pattern)
-    return row
-
-
 def renumber_ids(obj: dict[str, Any], base_id: int) -> int:
     """Assegna ID sequenziali a `obj` e a tutti i pannelli annidati.
 
-    Ritorna il prossimo ID disponibile.
+    Ritorna il prossimo ID disponibile. Usa `iter_panels`, quindi funziona a
+    qualsiasi profondità.
     """
     nid = base_id
-    obj["id"] = nid
-    nid += 1
-    for panel in obj.get("panels") or []:
+    for panel in iter_panels([obj]):
         panel["id"] = nid
         nid += 1
-        for sub in panel.get("panels") or []:
-            sub["id"] = nid
-            nid += 1
     return nid
+
+
+def _block_end(
+    container: list[dict[str, Any]], idx: int, children: list[dict[str, Any]]
+) -> int:
+    """Ultimo indice occupato nella lista dal blocco riga (riga + figli)."""
+    end = idx
+    for child in children:
+        j = _container_index(container, child)
+        if j > end:
+            end = j
+    return end
+
+
+def row_block(
+    db: dict[str, Any], row_id: int
+) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
+    """Ritorna `(contenitore, indice, riga)` del blocco riga.
+
+    Solleva `ValueError` se la riga non esiste: unico punto in cui i comandi
+    che manipolano un blocco riga gestiscono quel caso.
+    """
+    container, idx = find_row_container(db, row_id)
+    if container is None:
+        raise ValueError(f"Riga {row_id} non trovata.")
+    return container, idx, require_row(db, row_id)
 
 
 def insert_row_after_block(
@@ -309,15 +305,8 @@ def insert_row_after_block(
     seguono: inserire subito dopo la riga spezzerebbe l'associazione.
     Ritorna l'indice usato per l'inserimento.
     """
-    row = find_row(db, row_id)
-    container, idx = find_row_container(db, row_id)
-    if row is None or container is None:
-        raise ValueError(f"Riga {row_id} non trovata.")
-    end = idx
-    for child in row_children(db, row):
-        j = _container_index(container, child)
-        if j > end:
-            end = j
+    container, idx, row = row_block(db, row_id)
+    end = _block_end(container, idx, row_children(db, row))
     container.insert(end + 1, new_row)
     return end + 1
 
@@ -327,10 +316,7 @@ def remove_row_block(db: dict[str, Any], row_id: int) -> int:
 
     Ritorna il numero di pannelli di contenuto rimossi insieme alla riga.
     """
-    row = find_row(db, row_id)
-    container, idx = find_row_container(db, row_id)
-    if row is None or container is None:
-        raise ValueError(f"Riga {row_id} non trovata.")
+    container, idx, row = row_block(db, row_id)
     children = row_children(db, row)
     positions = {idx}
     for child in children:
@@ -351,14 +337,8 @@ def append_to_row_block(
     Riga collassata o legacy: il pannello va dentro `row["panels"]`.
     """
     if row.get("collapsed") is False and not (row.get("panels") or []):
-        container, idx = find_row_container(db, row.get("id"))
-        if container is None:
-            raise ValueError(f"Riga {row.get('id')} non trovata.")
-        end = idx
-        for child in row_children(db, row):
-            j = _container_index(container, child)
-            if j > end:
-                end = j
+        container, idx, _ = row_block(db, row.get("id"))
+        end = _block_end(container, idx, row_children(db, row))
         container.insert(end + 1, panel)
         return
     row.setdefault("panels", []).append(panel)
@@ -386,3 +366,19 @@ def shift_grid_y(panels: list[dict[str, Any]], delta: int) -> None:
         gp = p.get("gridPos")
         if isinstance(gp, dict):
             gp["y"] = int(gp.get("y", 0) or 0) + delta
+
+
+def shift_dashboard_grid_y(db: dict[str, Any], delta: int) -> None:
+    """Somma `delta` a `gridPos.y` di tutta la dashboard, senza doppi conteggi."""
+    shift_grid_y(dashboard_roots(db), delta)
+
+
+def stack_grid_y(panels: list[dict[str, Any]], start_y: int) -> int:
+    """Dispone i pannelli in colonna da `start_y`; ritorna l'altezza usata."""
+    y = start_y
+    for child in panels or []:
+        gp = child.get("gridPos") if isinstance(child.get("gridPos"), dict) else {}
+        gp["y"] = y
+        child["gridPos"] = gp
+        y += int(gp.get("h", 4) or 4)
+    return max(1, y - start_y)
