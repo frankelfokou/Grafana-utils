@@ -1,0 +1,2 @@
+[console_scripts]
+grafana-utils = grafana_tool.cli:main

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grafana-tool"
+version = "3.1.0"
+description = "CLI modulare per manipolare dashboard Grafana (JSON)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+grafana-utils = "grafana_tool.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["grafana_tool*"]

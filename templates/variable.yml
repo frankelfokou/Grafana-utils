@@ -1,0 +1,8 @@
+# Variabili parametrizzate per la sostituzione nei template Grafana.
+# I valori lasciati vuoti vengono ignorati: non sovrascrivono i default
+# né i valori passati da CLI.
+NAMESPACE: ""
+CLUSTER_GEN: ""
+DATASOURCE_UID: ""
+TITLE_PREFIX: ""
+ROW_TITLE: ""

@@ -1,0 +1,6 @@
+timestamp: 2026-11-02T14:45:21
+type: OUTPUT_ERROR
+command: extract-row
+argv: extract-row --from-dashboard examples/full_dashbaord.json --row-match Sistemistica -o /tmp/estrazione.json
+exit_code: 3
+message: impossibile scrivere /tmp/estrazione.json: [Errno 1] Operation not permitted: '/tmp/estrazione.json'

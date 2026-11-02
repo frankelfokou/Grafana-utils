@@ -1,0 +1,219 @@
+"""identity: assegnare identità nuove agli oggetti scritti in output (SRP).
+
+Responsabilità unica: decidere *chi è* un oggetto quando finisce in un file
+di output, senza leggere né scrivere file e senza conoscere argparse.
+
+Tre livelli di identità in Grafana, e come vengono trattati qui:
+
+  - **dashboard**: `uid` è globale nell'istanza; `id` è il numero interno del
+    database. Una bozza di dashboard nuova viaggia con `id: null`, `uid`
+    generato e `version: 1`, così Grafana la crea e non aggiorna quella
+    esistente con lo stesso uid.
+  - **pannello**: l'`id` è un intero unico *dentro* la dashboard. Non esiste
+    un id di pannello globale: per non riusare i numeri della sorgente i
+    comandi che creano pannelli partono da `max + 1` o da una base esplicita.
+  - **titolo**: è un'etichetta, non una chiave. Grafana accetta titoli
+    duplicati, ma due pannelli con lo stesso nome nella stessa dashboard
+    rendono ricerca e link ambigui: `unique_title` aggiunge ` (2)`, ` (3)`.
+
+Le funzioni sono pure: ricevono i valori già presenti in Grafana (inventario
+delle dashboard, titoli della dashboard) e restituiscono i nuovi valori.
+"""
+from __future__ import annotations
+
+import secrets
+import string
+from typing import Any, Iterable, Iterator, NamedTuple
+
+from grafana_tool.model import iter_all_panels, iter_panels
+
+# Grafana usa uid alfanumerici di 9 caratteri; lo stesso alfabeto evita uid
+# che il server dovrebbe riscrivere.
+UID_ALPHABET = string.ascii_letters + string.digits
+UID_LENGTH = 9
+
+
+class DashboardIdentity(NamedTuple):
+    """Identità assegnata a una dashboard di output."""
+
+    uid: str
+    title: str
+
+
+def new_uid(length: int = UID_LENGTH) -> str:
+    """Genera un uid casuale nello stile di Grafana."""
+    if length < 1:
+        raise ValueError("La lunghezza dell'uid deve essere positiva.")
+    return "".join(secrets.choice(UID_ALPHABET) for _ in range(length))
+
+
+def new_uid_not_in(taken: Iterable[str], length: int = UID_LENGTH) -> str:
+    """Genera un uid che non compare in `taken` (confronto case-insensitive)."""
+    used = {str(u).casefold() for u in taken if u}
+    while True:
+        candidate = new_uid(length)
+        if candidate.casefold() not in used:
+            return candidate
+
+
+def normalize_title(title: Any) -> str:
+    """Forma di confronto di un titolo: spazi compattati, case-insensitive."""
+    return " ".join(str(title or "").split()).casefold()
+
+
+def unique_title(base: str, taken: Iterable[str], start: int = 2) -> str:
+    """Restituisce `base` se libero, altrimenti `base (n)` con n minimo libero."""
+    clean = " ".join(str(base or "").split()) or "Senza titolo"
+    used = {normalize_title(t) for t in taken if t}
+    if normalize_title(clean) not in used:
+        return clean
+    n = start
+    while normalize_title(f"{clean} ({n})") in used:
+        n += 1
+    return f"{clean} ({n})"
+
+
+def all_titles(db: dict[str, Any]) -> list[str]:
+    """Titoli non vuoti di righe e pannelli della dashboard."""
+    out: list[str] = []
+    for p in iter_all_panels(db):
+        t = p.get("title")
+        if isinstance(t, str) and t.strip():
+            out.append(t)
+    return out
+
+
+def panel_titles(db: dict[str, Any]) -> list[str]:
+    """Titoli non vuoti dei soli pannelli di contenuto (righe escluse)."""
+    out: list[str] = []
+    for p in iter_all_panels(db):
+        if p.get("type") == "row":
+            continue
+        t = p.get("title")
+        if isinstance(t, str) and t.strip():
+            out.append(t)
+    return out
+
+
+def dedupe_panel_titles(
+    panels: Iterable[dict[str, Any]], taken: Iterable[str] = ()
+) -> int:
+    """Rende unici i titoli dei pannelli (anche annidati) rispetto a `taken`.
+
+    Le righe sono escluse: il loro titolo viene gestito dal comando che le
+    crea. I pannelli senza titolo restano senza. Ritorna quanti titoli sono
+    stati riscritti.
+    """
+    used = {normalize_title(t) for t in taken if t}
+    renamed = 0
+    for p in panels:
+        for sub in iter_panels([p]):
+            if sub.get("type") == "row":
+                continue
+            title = sub.get("title")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            new = unique_title(title, used)
+            used.add(normalize_title(new))
+            if new != title:
+                sub["title"] = new
+                renamed += 1
+    return renamed
+
+
+def iter_library_panels(db: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Pannelli che puntano a una libreria condivisa (`libraryPanel.uid`)."""
+    for p in iter_all_panels(db):
+        lp = p.get("libraryPanel")
+        if isinstance(lp, dict) and lp.get("uid"):
+            yield p
+
+
+def parse_inventory(data: Any) -> tuple[set[str], set[str]]:
+    """Estrae `(uid, titoli)` da un inventario di dashboard già esistenti.
+
+    Accetta:
+      - la risposta di `GET /api/search` (lista di oggetti con `uid`/`title`);
+      - `{"dashboards": [...]}`;
+      - una singola dashboard (oggetto con `uid`/`title`).
+    """
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict) and isinstance(data.get("dashboards"), list):
+        items = data["dashboards"]
+    elif isinstance(data, dict):
+        items = [data]
+    else:
+        raise ValueError("Inventario non valido: attesa una lista o un oggetto JSON.")
+
+    uids: set[str] = set()
+    titles: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        uid = item.get("uid")
+        title = item.get("title")
+        if isinstance(uid, str) and uid.strip():
+            uids.add(uid.strip())
+        if isinstance(title, str) and title.strip():
+            titles.add(title.strip())
+    return uids, titles
+
+
+def seal_new_dashboard(
+    db: dict[str, Any],
+    *,
+    uid: str | None = None,
+    title: str | None = None,
+    taken_uids: Iterable[str] = (),
+    taken_titles: Iterable[str] = (),
+) -> DashboardIdentity:
+    """Rende `db` una dashboard *nuova* per Grafana.
+
+    - `uid`: quello richiesto, se libero; altrimenti generato e verificato
+      contro `taken_uids`. Un uid esplicito già in uso è un errore: non è
+      possibile "indovinare" un altro identificativo richiesto dall'utente.
+    - `id`: None, così Grafana crea una nuova dashboard.
+    - `version`: 1, coerente con una dashboard appena creata.
+    - `title`: quello richiesto o quello corrente, reso unico rispetto a
+      `taken_titles` con il suffisso ` (2)`, ` (3)`.
+    """
+    used_uids = {str(u).casefold() for u in taken_uids if u}
+    if uid is not None:
+        candidate = str(uid).strip()
+        if not candidate:
+            raise ValueError("uid vuoto: indicare un valore non vuoto.")
+        if candidate.casefold() in used_uids:
+            raise ValueError(
+                f"uid '{candidate}' già usato da una dashboard esistente."
+            )
+    else:
+        candidate = new_uid_not_in(used_uids)
+
+    final_title = unique_title(title or db.get("title") or "Dashboard", taken_titles)
+
+    db["uid"] = candidate
+    db["id"] = None
+    db["version"] = 1
+    db["title"] = final_title
+    return DashboardIdentity(uid=candidate, title=final_title)
+
+
+def next_panel_id_base(db: dict[str, Any]) -> int:
+    """Primo id libero dopo il massimo id della dashboard."""
+    m = 0
+    for p in iter_all_panels(db):
+        pid = p.get("id")
+        if isinstance(pid, int) and pid > m:
+            m = pid
+    return m + 1
+
+
+def id_range_collisions(db: dict[str, Any], base: int, count: int) -> list[int]:
+    """Id già presenti nella dashboard che cadrebbero nell'intervallo richiesto."""
+    used = {
+        p.get("id")
+        for p in iter_all_panels(db)
+        if isinstance(p.get("id"), int)
+    }
+    return sorted(i for i in range(base, base + count) if i in used)
