@@ -1,6 +1,0 @@
-timestamp: 2026-11-02T20:50:51
-type: USAGE_ERROR
-command: grafana-utils list
-argv: discover -s tests -t .
-exit_code: 2
-message: argument {row,panel}: invalid choice: 'widget' (choose from 'row', 'panel')

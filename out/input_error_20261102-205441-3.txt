@@ -1,6 +1,0 @@
-timestamp: 2026-11-02T20:54:41
-type: INPUT_ERROR
-command: layout
-argv: layout /var/folders/mt/577rj6555hx1qhjh4fzg_mk40000gn/T/tmp.VoLk6JwvSG/step1.json --in-row 125 -o /var/folders/mt/577rj6555hx1qhjh4fzg_mk40000gn/T/tmp.VoLk6JwvSG/lay.json
-exit_code: 2
-message: file di input non trovato: /var/folders/mt/577rj6555hx1qhjh4fzg_mk40000gn/T/tmp.VoLk6JwvSG/step1.json
