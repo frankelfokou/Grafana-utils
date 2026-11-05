@@ -18,7 +18,7 @@ import argparse
 import os
 from typing import Any
 
-from grafana_tool import errors, io, validation
+from grafana_tool import errors, formats, io, validation
 
 
 def resolve_output(args: argparse.Namespace) -> str:
@@ -26,16 +26,47 @@ def resolve_output(args: argparse.Namespace) -> str:
     return getattr(args, "output", None) or io.default_output_path(args.file)
 
 
-def save_and_validate(db: dict[str, Any], args: argparse.Namespace) -> int:
+def resolve_target_format(
+    args: argparse.Namespace, loaded: "formats.Loaded | None"
+) -> str:
+    """Formato di uscita: `--to-format` oppure quello del file di ingresso."""
+    explicit = getattr(args, "to_format", None)
+    if explicit:
+        return explicit
+    if loaded is not None:
+        return loaded.target_default
+    return "classic"
+
+
+def _print_report(report: "formats.Report") -> None:
+    """Stampa le perdite dichiarate dalla conversione di uscita."""
+    for line in report.lines():
+        print(line)
+
+
+def save_and_validate(
+    db: dict[str, Any],
+    args: argparse.Namespace,
+    loaded: "formats.Loaded | None" = None,
+) -> int:
     """Salva `db` e applica la validazione finale.
 
-    Ritorna 0 se la validazione passa, 1 se fallisce.
+    `db` è il modello canonico: viene convertito nel formato di uscita
+    (`--to-format`, altrimenti lo stesso dell'ingresso) solo qui, all'ultimo
+    passaggio. La validazione gira sul canonico, così è identica per entrambi
+    i formati. Ritorna 0 se la validazione passa, 1 se fallisce.
     """
     out = resolve_output(args)
     dry_run = bool(getattr(args, "dry_run", False))
     threshold = getattr(args, "severity", "error")
 
-    io.save_dashboard(db, out, dry_run=dry_run)
+    document, report = formats.render(
+        db,
+        getattr(args, "target_format", None) or resolve_target_format(args, loaded),
+        drop_alerts=bool(getattr(args, "drop_alerts", False)),
+    )
+    io.save_dashboard(document, out, dry_run=dry_run)
+    _print_report(report)
 
     result = validation.check(db, threshold)
     print()

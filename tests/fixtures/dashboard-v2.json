@@ -1,0 +1,359 @@
+{
+  "annotations": [
+    {
+      "kind": "AnnotationQuery",
+      "spec": {
+        "builtIn": true,
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "query": {
+          "datasource": { "name": "grafana" },
+          "group": "grafana",
+          "kind": "DataQuery",
+          "spec": { "limit": 100, "matchAny": false, "tags": [], "type": "dashboard" },
+          "version": "v0"
+        }
+      }
+    }
+  ],
+  "cursorSync": "Off",
+  "editable": true,
+  "elements": {
+    "panel-1": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": { "name": "prom-main" },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "sum(rate(http_requests_total[5m]))",
+                      "legendFormat": "{{service}}",
+                      "intervalFactor": 1
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": true,
+                  "query": {
+                    "datasource": { "name": "prom-main" },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "expr": "sum(rate(http_requests_total{code=~\"5..\"}[5m]))",
+                      "legendFormat": "errori"
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              }
+            ],
+            "queryOptions": { "interval": "1m" },
+            "transformations": [
+              {
+                "group": "organize",
+                "kind": "Transformation",
+                "spec": { "options": { "excludeByName": { "Time": true } } }
+              }
+            ]
+          }
+        },
+        "description": "Richiesta al secondo",
+        "id": 1,
+        "links": [],
+        "title": "Traffico",
+        "transparent": true,
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": { "mode": "palette-classic" },
+                "custom": { "drawStyle": "line", "fillOpacity": 10 }
+              },
+              "overrides": [
+                {
+                  "matcher": { "id": "byName", "options": "errori" },
+                  "properties": [
+                    { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } },
+                    { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }
+                  ]
+                }
+              ]
+            },
+            "options": {
+              "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+              "tooltip": { "mode": "multi", "sort": "none" }
+            }
+          },
+          "version": "13.0.1"
+        }
+      }
+    },
+    "panel-2": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": { "queries": [], "queryOptions": {}, "transformations": [] }
+        },
+        "description": "",
+        "id": 2,
+        "links": [],
+        "title": "Note",
+        "vizConfig": {
+          "group": "text",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": { "defaults": {}, "overrides": [] },
+            "options": {
+              "code": { "language": "plaintext", "showLineNumbers": false, "showMiniMap": false },
+              "content": "Dashboard di prova",
+              "mode": "html"
+            }
+          },
+          "version": "13.0.1"
+        }
+      }
+    },
+    "panel-3": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": { "name": "prom-main" },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": { "expr": "up{job=\"node\"}", "instant": true },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ]
+          }
+        },
+        "description": "",
+        "id": 3,
+        "links": [],
+        "title": "Nodi attivi",
+        "vizConfig": {
+          "group": "stat",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short",
+                "thresholds": {
+                  "mode": "absolute",
+                  "steps": [{ "color": "green", "value": null }]
+                }
+              },
+              "overrides": []
+            },
+            "options": {
+              "colorMode": "value",
+              "graphMode": "area",
+              "justifyMode": "auto",
+              "orientation": "auto",
+              "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+              "textMode": "auto"
+            }
+          },
+          "version": "13.0.1"
+        }
+      }
+    }
+  },
+  "layout": {
+    "kind": "TabsLayout",
+    "spec": {
+      "tabs": [
+        {
+          "kind": "TabsLayoutTab",
+          "spec": {
+            "title": "Applicativa",
+            "layout": {
+              "kind": "RowsLayout",
+              "spec": {
+                "rows": [
+                  {
+                    "kind": "RowsLayoutRow",
+                    "spec": {
+                      "collapse": false,
+                      "layout": {
+                        "kind": "GridLayout",
+                        "spec": {
+                          "items": [
+                            {
+                              "kind": "GridLayoutItem",
+                              "spec": {
+                                "element": { "kind": "ElementReference", "name": "panel-1" },
+                                "height": 8,
+                                "width": 16,
+                                "x": 0,
+                                "y": 0
+                              }
+                            },
+                            {
+                              "kind": "GridLayoutItem",
+                              "spec": {
+                                "element": { "kind": "ElementReference", "name": "panel-2" },
+                                "height": 8,
+                                "width": 8,
+                                "x": 16,
+                                "y": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      "title": "Generale"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "kind": "TabsLayoutTab",
+          "spec": {
+            "title": "Sistemistica",
+            "layout": {
+              "kind": "RowsLayout",
+              "spec": {
+                "rows": [
+                  {
+                    "kind": "RowsLayoutRow",
+                    "spec": {
+                      "collapse": true,
+                      "layout": {
+                        "kind": "GridLayout",
+                        "spec": {
+                          "items": [
+                            {
+                              "kind": "GridLayoutItem",
+                              "spec": {
+                                "element": { "kind": "ElementReference", "name": "panel-3" },
+                                "height": 6,
+                                "width": 6,
+                                "x": 0,
+                                "y": 0
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      "title": "Infra"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": true,
+      "title": "Runbook",
+      "tooltip": "",
+      "type": "link",
+      "url": "https://example.invalid/runbook"
+    }
+  ],
+  "liveNow": false,
+  "preload": false,
+  "tags": ["demo", "postevita"],
+  "timeSettings": {
+    "autoRefresh": "1m",
+    "autoRefreshIntervals": ["30s", "1m", "5m"],
+    "fiscalYearStartMonth": 0,
+    "from": "now-3h",
+    "hideTimepicker": false,
+    "timezone": "browser",
+    "to": "now"
+  },
+  "title": "Dashboard v2 di prova",
+  "variables": [
+    {
+      "kind": "DatasourceVariable",
+      "spec": {
+        "allowCustomValue": true,
+        "current": { "text": "prom-main", "value": "prom-main" },
+        "hide": "dontHide",
+        "includeAll": false,
+        "label": "env",
+        "multi": false,
+        "name": "env",
+        "options": [],
+        "pluginId": "prometheus",
+        "refresh": "onDashboardLoad",
+        "regex": "",
+        "skipUrlSync": false
+      }
+    },
+    {
+      "kind": "QueryVariable",
+      "spec": {
+        "allowCustomValue": true,
+        "current": { "text": "3", "value": "3" },
+        "definition": "label_values(cluster_gen)",
+        "hide": "dontHide",
+        "includeAll": false,
+        "label": "cluster_gen",
+        "multi": false,
+        "name": "cluster_gen",
+        "options": [],
+        "query": {
+          "datasource": { "name": "prom-main" },
+          "group": "prometheus",
+          "kind": "DataQuery",
+          "spec": {
+            "qryType": 5,
+            "query": "label_values(cluster_gen)",
+            "refId": "PrometheusVariableQueryEditor-VariableQuery"
+          },
+          "version": "v0"
+        },
+        "refresh": "onDashboardLoad",
+        "regex": "/^(2|3)$/",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": "disabled"
+      }
+    }
+  ]
+}

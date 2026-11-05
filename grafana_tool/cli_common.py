@@ -7,9 +7,9 @@ un'opzione che vive qui.
 Vocabolario delle opzioni, uguale per tutti i comandi che agiscono su un
 oggetto:
 
-  - **tipo**: argomento posizionale `row` oppure `panel`;
-  - **selettori** (`--id`, `--match-title`, `--match-type`, `--in-row`):
-    scelgono *quali* oggetti;
+  - **tipo**: argomento posizionale `row`, `panel` oppure `tab`;
+  - **selettori** (`--id`, `--match-title`, `--match-type`, `--in-row`,
+    `--in-tab`): scelgono *quali* oggetti;
   - **impostazioni** (`--title`, `--collapsed`, `--replace`, `--datasource`):
     dicono *cosa* cambiare.
 
@@ -21,8 +21,9 @@ import argparse
 
 FILE_HELP = "Percorso del file dashboard JSON (deve esistere)"
 SEVERITY_CHOICES = ("info", "warning", "error")
-KIND_CHOICES = ("row", "panel")
+KIND_CHOICES = ("row", "panel", "tab")
 FORMAT_CHOICES = ("text", "json")
+TO_FORMAT_CHOICES = ("classic", "v2")
 
 
 def add_file_argument(parser: argparse.ArgumentParser) -> None:
@@ -31,10 +32,13 @@ def add_file_argument(parser: argparse.ArgumentParser) -> None:
 
 
 def add_kind_argument(parser: argparse.ArgumentParser) -> None:
-    """Aggiunge il tipo di oggetto: `row` oppure `panel`."""
+    """Aggiunge il tipo di oggetto: `row`, `panel` oppure `tab`."""
     parser.add_argument(
-        "kind", choices=list(KIND_CHOICES), metavar="{row,panel}",
-        help="Tipo di oggetto su cui operare: row (riga) o panel (pannello)",
+        "kind", choices=list(KIND_CHOICES), metavar="{row,panel,tab}",
+        help=(
+            "Tipo di oggetto su cui operare: row (riga), panel (pannello) "
+            "o tab (scheda)"
+        ),
     )
 
 
@@ -75,8 +79,31 @@ def add_write_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Non scrive il file (la validazione gira comunque in memoria)")
+    add_to_format_option(parser)
+    parser.add_argument(
+        "--drop-alerts", dest="drop_alerts", action="store_true",
+        help=(
+            "Permette l'uscita v2 scartando le regole di alert legacy dei pannelli "
+            "(senza il flag la conversione si ferma)"
+        ),
+    )
     add_severity_option(
         parser, "Soglia che fa fallire la validazione finale (default: error)"
+    )
+
+
+def add_to_format_option(parser: argparse.ArgumentParser) -> None:
+    """Aggiunge `--to-format`, il formato del file di output.
+
+    Se omesso vale il formato del file di ingresso: convertire è una scelta
+    esplicita, non un effetto collaterale.
+    """
+    parser.add_argument(
+        "--to-format", dest="to_format", choices=list(TO_FORMAT_CHOICES),
+        help=(
+            "Formato del file di output: classic (panels/rows) o v2 "
+            "(elements/layout). Default: lo stesso dell'ingresso"
+        ),
     )
 
 
@@ -102,6 +129,22 @@ def add_selectors(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--in-row", type=int, metavar="N",
         help="Limita ai pannelli della riga con questo id",
+    )
+    parser.add_argument(
+        "--in-tab", dest="in_tab", type=int, metavar="N",
+        help="Limita alle righe (o ai pannelli) del tab con questo id",
+    )
+
+
+def add_to_tab_option(parser: argparse.ArgumentParser) -> None:
+    """Aggiunge `--to-tab` (e l'alias `--tab`): tab di destinazione.
+
+    Vale per le righe: in `create row` è il tab in cui nasce la riga
+    (default: il primo), in `move row` quello in cui si trasferisce.
+    """
+    parser.add_argument(
+        "--to-tab", "--tab", dest="to_tab", type=int, metavar="N",
+        help="Tab di destinazione della riga (default: il primo tab)",
     )
 
 

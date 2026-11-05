@@ -1,8 +1,9 @@
 """Registro dei sottocomandi.
 
 Il blocco CRUD è unificato: `list`, `create`, `update`, `delete`, `move`
-ed `extract` ricevono `row` o `panel` come primo argomento, quindi non
-esiste più un comando per tipo di oggetto.
+ed `extract` ricevono `row`, `panel` o `tab` come primo argomento, quindi non
+esiste più un comando per tipo di oggetto. `fork` lavora sull'intera
+dashboard e non ha un tipo.
 
 Ogni modulo espone `command`: un'istanza di `ReadCommand` o `WriteCommand`
 con l'interfaccia uniforme usata da `cli.py`:
@@ -17,6 +18,7 @@ L'ordine di `ALL_COMMANDS` è l'ordine in cui i comandi compaiono nell'help.
 from .create import command as create
 from .delete import command as delete
 from .extract import command as extract
+from .fork import command as fork
 from .layout import command as layout
 from .lint import command as lint
 from .list import command as list_
@@ -31,6 +33,7 @@ ALL_COMMANDS = [
     delete,
     move,
     extract,
+    fork,
     layout,
     validate,
     lint,

@@ -64,9 +64,9 @@ class ListPanelTest(CLITestCase):
         src = self.write_json("in.json", sample_dashboard())
         code, out, _ = self.run_cli("list", "panel", src)
         self.assertEqual(code, 0)
-        self.assertIn("- [100] text: NOTE  (nessuna riga)", out)
-        self.assertIn("- [2] timeseries: A1  (riga 1)", out)
-        self.assertIn("- [6] timeseries: B1  (riga 5)", out)
+        self.assertIn("- [100] text: NOTE  (nessuna riga, tab 1)", out)
+        self.assertIn("- [2] timeseries: A1  (riga 1, tab 1)", out)
+        self.assertIn("- [6] timeseries: B1  (riga 5, tab 1)", out)
 
     def test_le_righe_non_compaiono(self):
         src = self.write_json("in.json", sample_dashboard())

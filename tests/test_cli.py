@@ -19,13 +19,13 @@ class ParserTest(unittest.TestCase):
         names = {c.NAME for c in ALL_COMMANDS}
         self.assertEqual(
             names,
-            {"list", "create", "update", "delete", "move", "extract", "layout",
-             "validate", "lint"},
+            {"list", "create", "update", "delete", "move", "extract", "fork",
+             "layout", "validate", "lint"},
         )
 
     def test_il_tipo_e_un_argomento_posizionale(self):
         parser = cli.build_parser()
-        for kind in ("row", "panel"):
+        for kind in ("row", "panel", "tab"):
             args = parser.parse_args(["list", kind, "x.json"])
             self.assertEqual(args.kind, kind)
             self.assertEqual(args.file, "x.json")

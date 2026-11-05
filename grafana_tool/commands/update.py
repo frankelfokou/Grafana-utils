@@ -27,7 +27,7 @@ from grafana_tool.replacements import apply_in_panel, parse_replacements
 
 class UpdateCommand(WriteCommand):
     NAME = "update"
-    HELP = "Aggiorna titolo, stato, query o datasource di righe o pannelli"
+    HELP = "Aggiorna titolo, stato, query o datasource di tab, righe o pannelli"
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         add_kind_argument(parser)
@@ -58,13 +58,7 @@ class UpdateCommand(WriteCommand):
                 "--expanded, --replace o --datasource."
             )
 
-        targets = objects.select_targets(
-            db, args.kind,
-            ids=args.id,
-            match_title=args.match_title,
-            match_type=args.match_type,
-            in_row=args.in_row,
-        )
+        targets = objects.targets_from_args(db, args)
         if not targets:
             raise ValueError(
                 f"Nessun {objects.NOUN[args.kind]} corrisponde ai selettori indicati."

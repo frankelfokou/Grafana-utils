@@ -390,7 +390,7 @@ class DeleteTest(CLITestCase):
         code, _, err = self.run_cli("delete", "panel", src, "--id", "2",
                                     "--keep-children", "-o", self.tmp / "o.json")
         self.assertEqual(code, 1)
-        self.assertIn("solo per le righe", err)
+        self.assertIn("solo per righe e tab", err)
 
 
 class MoveTest(CLITestCase):

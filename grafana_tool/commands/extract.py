@@ -1,15 +1,15 @@
-"""extract: estrae una riga o un pannello in una dashboard minima.
+"""extract: estrae un tab, una riga o un pannello in una dashboard minima.
 
-Un solo comando per entrambi i tipi: cambia solo come si costruisce il
-blocco estratto (la riga porta i suoi pannelli, il pannello è sé stesso).
-Uid, id, titolo e `gridPos` vengono normalizzati allo stesso modo.
+Un solo comando per i tre tipi: cambia solo come si costruisce il blocco
+estratto (il tab porta le sue righe, la riga i suoi pannelli, il pannello è
+sé stesso). Uid, id, titolo e `gridPos` vengono normalizzati allo stesso modo.
 """
 from __future__ import annotations
 
 import argparse
 import copy
 
-from grafana_tool import objects
+from grafana_tool import objects, schema, tabs
 from grafana_tool.cli_common import (
     add_dedupe_option,
     add_kind_argument,
@@ -28,6 +28,7 @@ from grafana_tool.io import load_json
 from grafana_tool.model import (
     get_max_id,
     iter_all_panels,
+    iter_rows,
     min_grid_y,
     row_children,
     shift_grid_y,
@@ -36,13 +37,14 @@ from grafana_tool.model import (
 ROOT_GRID = {
     objects.ROW: {"h": 1, "w": 24, "x": 0, "y": 0},
     objects.PANEL: {"h": 8, "w": 12, "x": 0, "y": 0},
+    objects.TAB: {"h": 1, "w": 24, "x": 0, "y": 0},
 }
-PAST = {objects.ROW: "estratta", objects.PANEL: "estratto"}
+PAST = {objects.ROW: "estratta", objects.PANEL: "estratto", objects.TAB: "estratto"}
 
 
 class ExtractCommand(WriteCommand):
     NAME = "extract"
-    HELP = "Estrae una riga o un pannello in una dashboard minima"
+    HELP = "Estrae un tab, una riga o un pannello in una dashboard minima"
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         add_kind_argument(parser)
@@ -72,21 +74,31 @@ class ExtractCommand(WriteCommand):
         return parse_inventory(load_json(args.existing_dashboards))
 
     @staticmethod
-    def _block(db: dict, target: objects.Target) -> list[dict]:
-        """Radici del blocco da estrarre, nella forma in cui Grafana le salva."""
-        if target.kind == objects.PANEL:
-            return [copy.deepcopy(target.obj)]
+    def _row_block(db: dict, row: dict) -> list[dict]:
+        """Una riga nella forma in cui Grafana la salva.
 
-        # Una riga espansa non ha figli in `row["panels"]`: Grafana tiene i
-        # pannelli top-level subito dopo la riga. Nell'estrazione ripetiamo la
-        # stessa forma; una riga collassata conserva i figli annidati.
-        row_copy = copy.deepcopy(target.obj)
-        expanded = target.obj.get("collapsed") is False and not (target.obj.get("panels") or [])
+        Una riga espansa non ha figli in `row["panels"]`: Grafana tiene i
+        pannelli top-level subito dopo la riga. Nell'estrazione ripetiamo la
+        stessa forma; una riga collassata conserva i figli annidati.
+        """
+        row_copy = copy.deepcopy(row)
+        expanded = row.get("collapsed") is False and not (row.get("panels") or [])
         if expanded:
             row_copy["panels"] = []
-            children = [c for c in row_children(db, target.obj) if isinstance(c, dict)]
+            children = [c for c in row_children(db, row) if isinstance(c, dict)]
             return [row_copy] + [copy.deepcopy(c) for c in children]
         return [row_copy]
+
+    def _block(self, db: dict, target: objects.Target) -> list[dict]:
+        """Radici del blocco da estrarre."""
+        if target.kind == objects.PANEL:
+            return [copy.deepcopy(target.obj)]
+        if target.kind == objects.TAB:
+            block: list[dict] = []
+            for row in tabs.rows_of(db, target.id):
+                block.extend(self._row_block(db, row))
+            return block
+        return self._row_block(db, target.obj)
 
     def modify(self, db: dict, args: argparse.Namespace) -> dict:
         objects.require_selector(
@@ -96,13 +108,7 @@ class ExtractCommand(WriteCommand):
             match_type=args.match_type,
             in_row=args.in_row,
         )
-        targets = objects.select_targets(
-            db, args.kind,
-            ids=args.id,
-            match_title=args.match_title,
-            match_type=args.match_type,
-            in_row=args.in_row,
-        )
+        targets = objects.targets_from_args(db, args)
         if not targets:
             raise ValueError(
                 f"Nessun {objects.NOUN[args.kind]} corrisponde ai selettori indicati."
@@ -137,6 +143,10 @@ class ExtractCommand(WriteCommand):
         content = [p for p in block if p.get("type") != "row"]
         base_title = target.obj.get("title") or f"Extracted {args.kind}"
         db_min = minimal_dashboard(title=base_title, panels=extracted, source=db)
+
+        # Le righe estratte vengono dal loro tab di origine (o da nessuno):
+        # nella dashboard minima esiste un solo tab, quindi tutte confluiscono lì.
+        tabs.assign(db_min, list(iter_rows(db_min)), schema.IMPLICIT_TAB_ID)
 
         # La dashboard di output è un oggetto nuovo: uid generato, id nullo,
         # version 1 e titolo assente dall'inventario indicato. Né l'uid né il

@@ -25,7 +25,12 @@ import secrets
 import string
 from typing import Any, Iterable, NamedTuple
 
-from grafana_tool.model import iter_all_panels, iter_panels
+from grafana_tool.model import (
+    dashboard_roots,
+    iter_all_panels,
+    iter_panels,
+    renumber_ids,
+)
 
 # Grafana usa uid alfanumerici di 9 caratteri; lo stesso alfabeto evita uid
 # che il server dovrebbe riscrivere.
@@ -165,6 +170,7 @@ def seal_new_dashboard(
     title: str | None = None,
     taken_uids: Iterable[str] = (),
     taken_titles: Iterable[str] = (),
+    identify: bool = True,
 ) -> DashboardIdentity:
     """Rende `db` una dashboard *nuova* per Grafana.
 
@@ -175,26 +181,81 @@ def seal_new_dashboard(
     - `version`: 1, coerente con una dashboard appena creata.
     - `title`: quello richiesto o quello corrente, reso unico rispetto a
       `taken_titles` con il suffisso ` (2)`, ` (3)`.
+
+    Con `identify=False` vengono saltati uid, id e version: lo schema v2 non
+    li prevede, e scriverli per poi rimuoverli sarebbe rumore.
     """
     used_uids = _folded(taken_uids)
-    if uid is not None:
-        candidate = str(uid).strip()
-        if not candidate:
-            raise ValueError("uid vuoto: indicare un valore non vuoto.")
-        if candidate.casefold() in used_uids:
-            raise ValueError(
-                f"uid '{candidate}' già usato da una dashboard esistente."
-            )
-    else:
-        candidate = new_uid_not_in(used_uids)
+    candidate = ""
+    if identify:
+        if uid is not None:
+            requested = str(uid).strip()
+            if not requested:
+                raise ValueError("uid vuoto: indicare un valore non vuoto.")
+            if requested.casefold() in used_uids:
+                raise ValueError(
+                    f"uid '{requested}' già usato da una dashboard esistente."
+                )
+            candidate = requested
+        else:
+            candidate = new_uid_not_in(used_uids)
 
     final_title = unique_title(title or db.get("title") or "Dashboard", taken_titles)
 
-    db["uid"] = candidate
-    db["id"] = None
-    db["version"] = 1
+    if identify:
+        db["uid"] = candidate
+        db["id"] = None
+        db["version"] = 1
     db["title"] = final_title
     return DashboardIdentity(uid=candidate, title=final_title)
+
+
+def renumber_dashboard(db: dict[str, Any]) -> int:
+    """Rinumera gli id da 1, nell'ordine in cui compaiono nel file.
+
+    Serve a un fork: una dashboard nuova non deve portarsi dietro la
+    numerazione della precedente. Ritorna quanti oggetti hanno un id.
+    """
+    next_id = 1
+    for root in dashboard_roots(db):
+        next_id = renumber_ids(root, next_id)
+    return next_id - 1
+
+
+def detach_bindings(
+    db: dict[str, Any],
+    *,
+    keep_library: bool = False,
+    keep_alerts: bool = False,
+    strip_links: bool = False,
+) -> dict[str, int]:
+    """Stacca i vincoli che legano la copia alla dashboard originale.
+
+    - `libraryPanel`: il pannello copiato torna inline, senza dipendere da una
+      libreria che l'utente non controlla;
+    - `alert` / `alertId`: le regole di alert non si copiano, perché
+      continuerebbero a notificare per una dashboard che non è più quella;
+    - `links`: rimossi solo su richiesta, perché normalmente fanno parte del
+      contenuto.
+
+    Ritorna il conteggio delle rimozioni per tipo.
+    """
+    counts = {"library": 0, "alerts": 0, "links": 0}
+    for panel in iter_all_panels(db):
+        if not keep_library and "libraryPanel" in panel:
+            panel.pop("libraryPanel")
+            counts["library"] += 1
+        if not keep_alerts and ("alert" in panel or "alertId" in panel):
+            panel.pop("alert", None)
+            panel.pop("alertId", None)
+            counts["alerts"] += 1
+
+    if strip_links:
+        links = db.get("links")
+        if isinstance(links, list):
+            counts["links"] = len(links)
+            db["links"] = []
+    return counts
 
 
 def id_range_collisions(db: dict[str, Any], base: int, count: int) -> list[int]:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from grafana_tool import schema
 
 _SOURCE_KEYS = ("time", "timezone", "refresh", "templating", "schemaVersion")
 
@@ -49,4 +50,6 @@ def minimal_dashboard(
         for key in _SOURCE_KEYS:
             if key in source:
                 db[key] = copy.deepcopy(source[key])
+    # Il modello canonico ha sempre un tab: una dashboard minima è un tab solo.
+    schema.ensure_tabs(db, title=title)
     return db

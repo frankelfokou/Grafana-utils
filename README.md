@@ -22,23 +22,25 @@ Per iniziare, esporta la dashboard da Grafana con **Dashboard settings > JSON Mo
 1. [A cosa serve](#a-cosa-serve)
 2. [Installazione e avvio](#installazione-e-avvio)
 3. [Come è fatta una dashboard](#come-è-fatta-una-dashboard)
-4. [Come sono fatti i comandi](#come-sono-fatti-i-comandi)
-5. [Selettori: quali oggetti](#selettori-quali-oggetti)
-6. [Opzioni comuni dei comandi di scrittura](#opzioni-comuni-dei-comandi-di-scrittura)
-7. [Contratto I/O](#contratto-io)
-8. [Exit code](#exit-code)
-9. [`list`: leggere](#list-leggere)
-10. [`create`: creare](#create-creare)
-11. [`update`: aggiornare](#update-aggiornare)
-12. [`delete`: eliminare](#delete-eliminare)
-13. [`move`: spostare](#move-spostare)
-14. [`extract`: estrarre](#extract-estrarre)
-15. [`layout`, `validate`, `lint`: dashboard](#layout-validate-lint-dashboard)
-16. [Simmetria fra righe e pannelli](#simmetria-fra-righe-e-pannelli)
-17. [Dashboard nuove e nomi](#dashboard-nuove-e-nomi)
-18. [Pipeline di esempio](#pipeline-di-esempio)
-19. [Errori e log](#errori-e-log)
-20. [Sviluppo](#sviluppo)
+4. [Formati: classico e v2](#formati-classico-e-v2)
+5. [Come sono fatti i comandi](#come-sono-fatti-i-comandi)
+6. [Selettori: quali oggetti](#selettori-quali-oggetti)
+7. [Opzioni comuni dei comandi di scrittura](#opzioni-comuni-dei-comandi-di-scrittura)
+8. [Contratto I/O](#contratto-io)
+9. [Exit code](#exit-code)
+10. [`list`: leggere](#list-leggere)
+11. [`create`: creare](#create-creare)
+12. [`update`: aggiornare](#update-aggiornare)
+13. [`delete`: eliminare](#delete-eliminare)
+14. [`move`: spostare](#move-spostare)
+15. [`extract`: estrarre](#extract-estrarre)
+16. [`fork`: copiare la dashboard](#fork-copiare-la-dashboard)
+17. [`layout`, `validate`, `lint`: dashboard](#layout-validate-lint-dashboard)
+18. [Simmetria fra tab, righe e pannelli](#simmetria-fra-tab-righe-e-pannelli)
+19. [Dashboard nuove e nomi](#dashboard-nuove-e-nomi)
+20. [Pipeline di esempio](#pipeline-di-esempio)
+21. [Errori e log](#errori-e-log)
+22. [Sviluppo](#sviluppo)
 
 ## Installazione e avvio
 
@@ -51,7 +53,7 @@ python3 -m pip install .
 # installazione in modalità sviluppo, dalla cartella del progetto
 python3 -m pip install -e .
 
-grafana-utils --version         # grafana-utils 5.0.0
+grafana-utils --version         # grafana-utils 6.0.0
 python3 -m grafana_tool --help  # stesso comando senza installare lo script
 ```
 
@@ -69,6 +71,57 @@ Una dashboard esportata da Grafana è un oggetto JSON con righe e pannelli. Il f
 
 Non serve conoscere la differenza per usare i comandi: il tool risolve i pannelli di ogni riga nello stesso modo, righe espanse comprese.
 
+## Formati: classico e v2
+
+Grafana esporta la dashboard in due dialetti JSON. Il tool li riconosce entrambi e converte: si può leggere un formato e scriverne un altro.
+
+| Formato | Righe | Pannelli | Posizione |
+| --- | --- | --- | --- |
+| `classic` | `panels` con `type: "row"`, oppure la lista `rows` | in `row.panels` o top-level | ordine nella lista + `gridPos {x, y, w, h}` |
+| `v2` | albero `layout`: `TabsLayout` → `TabsLayoutTab` → `RowsLayout` → `RowsLayoutRow` | mappa `elements`, indicizzata per nome (`panel-362`) | `GridLayoutItem {x, y, width, height}` |
+
+I comandi funzionano allo stesso modo su entrambi: il file viene letto, portato in un modello interno unico, modificato e riscritto nel formato richiesto.
+
+```bash
+# modifica un pannello v2 e riscrive v2 (default: stesso formato dell'ingresso)
+grafana-utils update panel dashboard-v2.json --id 362 --title "Latenza"
+
+# converte in classico
+# possibile solo se la dashboard non ha più di un tab
+grafana-utils update panel dashboard-v2.json --id 362 --title "Latenza" --to-format classic
+
+# converte in v2 una dashboard classica
+grafana-utils update row dashboard.json --match-title "Generale" --title "Generale" --to-format v2
+```
+
+| Opzione | Tipo | Default | Descrizione |
+| --- | --- | --- | --- |
+| `--to-format {classic,v2}` | scelta | stesso formato dell'ingresso | Formato del file di output |
+| `--drop-alerts` | flag | off | Permette l'uscita v2 scartando le regole di alert legacy |
+
+Cosa si converte e cosa no:
+
+- **tab**: il formato classico non li ha. Una dashboard v2 con più di un tab non può essere scritta in classico: il comando si ferma con exit code 2 e suggerisce `--to-format v2`.
+- **pannelli fuori riga**: lo schema v2 li vuole sempre dentro un `GridLayout`. In uscita v2 finiscono in una riga senza titolo.
+- **`uid`, `id`, `version`**: non esistono nello schema v2 e in uscita vengono rimossi, con la perdita dichiarata nel report.
+- **alert legacy**: non hanno equivalente v2. La conversione si ferma, a meno di `--drop-alerts`.
+- **elemento in due posizioni**: il classico non può rappresentare lo stesso pannello in due punti. Il tool si ferma e nomina l'elemento.
+
+Ogni conversione che perde qualcosa lo stampa, prima del report di validazione:
+
+```text
+Conversione del formato:
+  [con perdita] 'uid' non esiste nello schema v2: rimosso in uscita
+  [con perdita] annotazione 'Annotations & Alerts': 'target' appiattito nel corpo della query
+```
+
+Un file che non è né classico né v2 non viene indovinato: il comando esce con codice 2 e nessun file viene scritto.
+
+```text
+Errore input: formato non riconosciuto (list): il file non contiene né 'panels'/'rows'
+(JSON model classico) né 'elements' + 'layout' (schema v2).
+```
+
 ## Come sono fatti i comandi
 
 Tutti i comandi hanno la stessa forma:
@@ -77,8 +130,8 @@ Tutti i comandi hanno la stessa forma:
 grafana-utils <verbo> <tipo> <file> [selettori] [impostazioni]
 ```
 
-- **verbo**: `list`, `create`, `update`, `delete`, `move`, `extract`, più `layout`, `validate` e `lint` che non lavorano su un singolo oggetto.
-- **tipo**: `row` oppure `panel`. È sempre lo stesso nome, per tutti i verbi.
+- **verbo**: `list`, `create`, `update`, `delete`, `move`, `extract`, più `fork`, `layout`, `validate` e `lint` che non lavorano su un singolo oggetto.
+- **tipo**: `row`, `panel` oppure `tab`. È sempre lo stesso nome, per tutti i verbi.
 - **file**: la dashboard da leggere, che non viene mai modificata.
 
 I verbi CRUD non hanno una versione "per riga" e una "per pannello": `delete row` e `delete panel` sono lo stesso comando, con lo stesso set di opzioni. Se un'operazione non ha senso per il tipo scelto, il comando lo dice invece di ignorarla.
@@ -100,6 +153,7 @@ I selettori sono identici per ogni verbo e per ogni tipo. Scelgono *quali* ogget
 | `--match-title REGEX` | regex | nessuno | opzionale; indipendente | Seleziona gli oggetti il cui titolo matcha; mai case-sensitive |
 | `--match-type TIPO` | stringa | nessuno | solo `panel`; indipendente | Seleziona i pannelli di quel tipo (`timeseries`, `text`, ...) |
 | `--in-row N` | intero | nessuno | solo `panel`; indipendente | Limita ai pannelli della riga `N` |
+| `--in-tab N` | intero | nessuno | `row` e `panel`; indipendente | Limita alle righe (o ai pannelli) del tab `N` |
 
 Regola mnemonica: **`--match-*` seleziona, le altre opzioni impostano**. `--title` è il nuovo titolo, `--match-title` è il filtro.
 
@@ -122,6 +176,8 @@ Tutti i comandi che scrivono un file (`create`, `update`, `delete`, `move`, `ext
 | --- | --- | --- | --- | --- |
 | `-o FILE`, `--output FILE` | path | `<input>_out.json` | opzionale; indipendente | File JSON di output; l'input non viene mai sovrascritto |
 | `--dry-run` | flag | off | opzionale; indipendente | Non scrive nulla, ma esegue comunque la validazione in memoria |
+| `--to-format {classic,v2}` | scelta | stesso formato dell'ingresso | opzionale; indipendente | Formato del file di output |
+| `--drop-alerts` | flag | off | solo con uscita v2 | Permette di scartare le regole di alert legacy |
 | `--severity {info,warning,error}` | scelta | `error` | opzionale; indipendente | Soglia che fa fallire la validazione finale |
 
 I comandi che creano o rinominano oggetti (`create`, `update`, `extract`) accettano anche `--dedupe-titles`, che rende unico il titolo rispetto agli altri già presenti nella dashboard, aggiungendo ` (2)`, ` (3)`.
@@ -162,12 +218,14 @@ Elenca gli oggetti del tipo indicato, senza scrivere nulla.
 | `--format {text,json}` | scelta | `text` | opzionale; indipendente | `json` produce un array di oggetti, utile in pipeline |
 | selettori | - | nessuno | opzionale; nessun selettore = tutti | Vedi [Selettori](#selettori-quali-oggetti) |
 
-Le righe riportano id, titolo, numero di pannelli e stato `collapsed` (il conteggio include i pannelli delle righe espanse). I pannelli riportano id, tipo, titolo, riga di appartenenza e un'anteprima della query.
+Le righe riportano id, titolo, numero di pannelli e stato `collapsed` (il conteggio include i pannelli delle righe espanse). I pannelli riportano id, tipo, titolo, riga e tab di appartenenza, più un'anteprima della query. I tab riportano id, titolo, numero di righe e di pannelli contenuti.
 
 ```bash
 grafana-utils list row dashboard.json
 grafana-utils list panel dashboard.json --in-row 125 --match-type timeseries
 grafana-utils list panel dashboard.json --format json | jq '.[].id'
+grafana-utils list tab dashboard-v2.json
+grafana-utils list row dashboard-v2.json --in-tab 2
 ```
 
 ## `create`: creare
@@ -182,6 +240,7 @@ Crea una riga o un pannello a partire da un oggetto esistente oppure da un templ
 | `--dedupe-titles` | flag | off | opzionale; indipendente | Rende unici titolo e titoli dei figli |
 | `--collapsed` / `--expanded` | flag | `collapsed` | solo `row` | Stato della nuova riga |
 | `--to-row N` | intero | stessa riga della sorgente | solo `panel`; indipendente | Riga di destinazione del pannello |
+| `--to-tab N` (alias `--tab`) | intero | primo tab | solo `row`; indipendente | Tab in cui nasce la nuova riga |
 | `--position {top,bottom}` | scelta | `bottom` | opzionale; indipendente | In cima o in fondo alla dashboard (righe) o alla riga (pannelli) |
 | `--replace OLD=NEW` | ripetibile | nessuno | opzionale; indipendente | Sostituzione su `target[*].expr` dei nuovi pannelli |
 | `--base-id N` | intero | `max id + 1` | opzionale; indipendente | Primo id dei nuovi oggetti; in conflitto è un errore |
@@ -204,6 +263,12 @@ grafana-utils create panel dashboard.json --from-id 12
 
 # pannello in un'altra riga, con query riscritta
 grafana-utils create panel dashboard.json --from-id 12 --to-row 125 --replace "gen2=gen3"
+
+# nuova riga in un tab specifico (dashboard v2 o classica convertita)
+grafana-utils create row dashboard-v2.json --from-id 125 --title "Anagrafica" --to-tab 2
+
+# nuovo tab
+python3 -m grafana_tool create tab dashboard-v2.json --title "Vista Economica"
 ```
 
 `--on-existing` vale solo per i template di riga: `error` (default) blocca, `replace` elimina la riga esistente prima di creare, `skip` lascia la dashboard com'è, `append` crea comunque un duplicato.
@@ -223,7 +288,7 @@ Applica una o più modifiche agli oggetti selezionati. Almeno una impostazione �
 | `--datasource-create` | flag | off | richiede `--datasource` | Crea il blocco datasource se assente |
 | selettori | - | tutti | opzionale | Vedi [Selettori](#selettori-quali-oggetti) |
 
-Su una **riga**, `--replace` e `--datasource` si applicano a tutti i pannelli che le appartengono: la stessa operazione che faresti su un pannello, estesa al suo contenuto. Su un pannello si applicano al pannello e ai suoi eventuali annidati.
+Su una **riga**, `--replace` e `--datasource` si applicano a tutti i pannelli che le appartengono: la stessa operazione che faresti su un pannello, estesa al suo contenuto. Su un pannello si applicano al pannello e ai suoi eventuali annidati. Su un **tab** valgono per tutti i pannelli di tutte le sue righe.
 
 ```bash
 # rinomina (una riga)
@@ -237,21 +302,29 @@ grafana-utils update row dashboard.json --id 125 --datasource prom-new --datasou
 
 # riscrive le query dei soli pannelli timeseries che iniziano per POD
 grafana-utils update panel dashboard.json --match-type timeseries --match-title "^POD" --replace "gen2=gen3"
+
+# rinomina un tab
+grafana-utils update tab dashboard-v2.json --id 2 --title "Sistemistica"
+
+# cambia datasource a tutti i pannelli di un tab
+grafana-utils update tab dashboard-v2.json --id 1 --datasource prom-new --datasource-type prometheus
 ```
 
 ## `delete`: eliminare
 
 | Opzione | Tipo | Default | Obbligo / dipendenze | Descrizione |
 | --- | --- | --- | --- | --- |
-| `--keep-children` | flag | off | solo `row`; indipendente | Promuove i pannelli della riga a top-level invece di eliminarli |
+| `--keep-children` | flag | off | `row` e `tab`; indipendente | Su una riga promuove i pannelli, su un tab sposta le righe nel primo tab rimasto |
 | selettori | - | nessuno | **obbligatorio** | Vedi [Selettori](#selettori-quali-oggetti) |
 
-Eliminare una riga elimina anche i pannelli che le appartengono, righe espanse comprese. `--keep-children` conserva i pannelli e rimuove solo l'intestazione.
+Eliminare una riga elimina anche i pannelli che le appartengono, righe espanse comprese. `--keep-children` conserva i pannelli e rimuove solo l'intestazione. Eliminare un tab elimina tutte le sue righe; `--keep-children` le trasferisce al primo tab rimasto. L'ultimo tab non si elimina: la dashboard ne ha sempre almeno uno.
 
 ```bash
 grafana-utils delete panel dashboard.json --id 12
 grafana-utils delete panel dashboard.json --match-title "^DEBUG" --dry-run
 grafana-utils delete row   dashboard.json --match-title "^VISTA" --keep-children
+grafana-utils delete tab   dashboard-v2.json --match-title "^Sperimentale"
+grafana-utils delete tab   dashboard-v2.json --id 2 --keep-children
 ```
 
 ## `move`: spostare
@@ -259,12 +332,13 @@ grafana-utils delete row   dashboard.json --match-title "^VISTA" --keep-children
 | Opzione | Tipo | Default | Obbligo / dipendenze | Descrizione |
 | --- | --- | --- | --- | --- |
 | `--to-row N` | intero | nessuno | solo `panel`; alternativo a `--before`/`--after` | Riga di destinazione del pannello |
+| `--to-tab N` (alias `--tab`) | intero | nessuno | solo `row`; indipendente | Tab di destinazione della riga |
 | `--before N` | intero | nessuno | alternativo a `--to-row` e `--after` | Posiziona prima dell'oggetto con questo id |
 | `--after N` | intero | nessuno | alternativo a `--to-row` e `--before` | Posiziona dopo l'oggetto con questo id |
 | `--position {top,bottom}` | scelta | `bottom` | con `--to-row` o da solo | In cima o in fondo al contenitore |
 | selettori | - | nessuno | **obbligatorio** | Vedi [Selettori](#selettori-quali-oggetti) |
 
-Le righe si riordinano tra loro (`--position`, `--before`, `--after`), i pannelli si spostano in un'altra riga (`--to-row`) o si riordinano dentro la propria (`--before`, `--after`).
+I tab si riordinano tra loro (`--position`, `--before`, `--after`), le righe si riordinano tra loro e possono cambiare tab (`--to-tab`), i pannelli si spostano in un'altra riga (`--to-row`) o si riordinano dentro la propria (`--before`, `--after`).
 
 ```bash
 # sposta un pannello nella riga 125, in coda
@@ -278,6 +352,12 @@ grafana-utils move row dashboard.json --id 125 --position top
 
 # mette la riga 125 subito dopo la riga 112
 grafana-utils move row dashboard.json --id 125 --after 112
+
+# trasferisce la riga 125 nel tab 2, in coda
+grafana-utils move row dashboard-v2.json --id 125 --to-tab 2
+
+# porta il tab 2 in cima
+grafana-utils move tab dashboard-v2.json --id 2 --position top
 ```
 
 ## `extract`: estrarre
@@ -300,8 +380,38 @@ L'inventario accetta la risposta di `GET /api/search` (lista di `{uid, title}`),
 ```bash
 grafana-utils extract row   dashboard.json --id 125 -o vista.json
 grafana-utils extract panel dashboard.json --id 12  -o pannello.json
+grafana-utils extract tab   dashboard-v2.json --id 2 -o sistemistica.json --to-format v2
 grafana-utils extract row   dashboard.json --match-title "Sistemistica" --existing-dashboards inv.json
 ```
+
+## `fork`: copiare la dashboard
+
+Copia l'intera dashboard in una **nuova**, senza legami con l'originale. È l'operazione da usare quando serve una copia su cui lavorare: `extract` prende un pezzo, `fork` prende tutto.
+
+| Opzione | Tipo | Default | Obbligo / dipendenze | Descrizione |
+| --- | --- | --- | --- | --- |
+| `--title T` | stringa | titolo attuale | opzionale; indipendente | Titolo della nuova dashboard, reso unico con ` (2)`, ` (3)` |
+| `--uid U` | stringa | generato | opzionale; indipendente | uid della copia; in conflitto con l'inventario è un errore |
+| `--existing-dashboards FILE` | path | nessuno | opzionale; indipendente | Inventario JSON delle dashboard già presenti in Grafana |
+| `--keep-library` | flag | off | opzionale; indipendente | Mantieni i riferimenti ai pannelli di libreria |
+| `--keep-alerts` | flag | off | opzionale; indipendente | Mantieni le regole di alert legacy |
+| `--strip-links` | flag | off | opzionale; indipendente | Rimuovi anche i link della dashboard |
+
+Cosa cambia nella copia:
+
+- **uid nuovo**, `id` nullo e `version` 1: Grafana crea una dashboard invece di aggiornare l'originale;
+- **titolo unico**: la sorgente esiste ancora, quindi il suo titolo non è libero;
+- **id dei pannelli rinumerati** da 1, così nessun numero della sorgente sopravvive;
+- **pannelli di libreria e alert staccati**: continuerebbero a puntare a oggetti e destinatari dell'originale;
+- **link conservati**: fanno parte del contenuto, si rimuovono solo con `--strip-links`.
+
+```bash
+grafana-utils fork dashboard.json -o copia.json
+grafana-utils fork dashboard.json --title "Vista 2" --existing-dashboards inv.json
+grafana-utils fork dashboard.json --strip-links --keep-alerts
+```
+
+Con `--to-format v2` la copia non riceve uid, `id` né `version`: lo schema v2 non li prevede.
 
 ## `layout`, `validate`, `lint`: dashboard
 
@@ -328,22 +438,24 @@ grafana-utils validate vista.json
 grafana-utils lint dashboard.json --format json --severity warning
 ```
 
-## Simmetria fra righe e pannelli
+## Simmetria fra tab, righe e pannelli
 
-| Operazione | `row` | `panel` | Note |
-| --- | --- | --- | --- |
-| `list` | sì | sì | |
-| `create --from-id` | sì | sì | |
-| `create --template` | sì | sì | per le righe esiste un template predefinito |
-| `update --title` | sì | sì | |
-| `update --replace` | sì | sì | su una riga vale per tutti i suoi pannelli |
-| `update --datasource` | sì | sì | su una riga vale per tutti i suoi pannelli |
-| `update --collapsed/--expanded` | sì | no | un pannello non è un contenitore: il comando lo rifiuta |
-| `delete` | sì | sì | |
-| `delete --keep-children` | sì | no | un pannello non ha figli propri |
-| `move --position/--before/--after` | sì | sì | |
-| `move --to-row` | no | sì | le righe non si annidano |
-| `extract` | sì | sì | |
+| Operazione | `tab` | `row` | `panel` | Note |
+| --- | --- | --- | --- | --- |
+| `list` | sì | sì | sì | per un tab mostra righe e pannelli contenuti |
+| `create` | sì | sì | sì | un tab nasce solo dal titolo; righe e pannelli da `--from-id` o `--template` |
+| `update --title` | sì | sì | sì | |
+| `update --replace` | sì | sì | sì | su tab e riga vale per tutti i pannelli contenuti |
+| `update --datasource` | sì | sì | sì | su tab e riga vale per tutti i pannelli contenuti |
+| `update --collapsed/--expanded` | no | sì | no | solo una riga è un contenitore richiudibile |
+| `delete` | sì | sì | sì | l'ultimo tab non si elimina |
+| `delete --keep-children` | sì | sì | no | su un tab conserva le righe, su una riga i pannelli |
+| `move --position/--before/--after` | sì | sì | sì | |
+| `move --to-tab` | no | sì | no | un pannello segue la riga che lo contiene |
+| `move --to-row` | no | no | sì | i tab non si annidano |
+| `extract` | sì | sì | sì | |
+
+Le asimmetrie sono strutturali: in ogni caso il comando **rifiuta** l'opzione con un messaggio esplicito, invece di ignorarla.
 
 Le due sole asimmetrie sono strutturali: una riga è un contenitore (quindi ha `collapsed` e dei figli da conservare), un pannello no. In entrambi i casi il comando rifiuta l'opzione con un messaggio esplicito, invece di ignorarla.
 

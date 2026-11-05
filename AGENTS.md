@@ -19,20 +19,21 @@ Garanzie del contratto:
 
 1. [Installazione e avvio](#installazione-e-avvio)
 2. [Modello dati](#modello-dati)
-3. [Modello dei comandi](#modello-dei-comandi)
-4. [Selettori](#selettori)
-5. [`objects.py`: righe e pannelli intercambiabili](#objectspy-righe-e-pannelli-intercambiabili)
-6. [Nomi dei file e contratto I/O](#nomi-dei-file-e-contratto-io)
-7. [Opzioni comuni](#opzioni-comuni)
-8. [Identità e nomi degli oggetti in output](#identità-e-nomi-degli-oggetti-in-output)
-9. [Pipeline di scrittura e validazione](#pipeline-di-scrittura-e-validazione)
-10. [Errori e log](#errori-e-log)
-11. [I comandi in dettaglio](#i-comandi-in-dettaglio)
-12. [Linter](#linter)
-13. [Architettura](#architettura)
-14. [File principali del modulo](#file-principali-del-modulo)
-15. [Test](#test)
-16. [Limiti noti](#limiti-noti)
+3. [Formati: classico e v2](#formati-classico-e-v2)
+4. [Modello dei comandi](#modello-dei-comandi)
+5. [Selettori](#selettori)
+6. [`objects.py`: righe e pannelli intercambiabili](#objectspy-righe-e-pannelli-intercambiabili)
+7. [Nomi dei file e contratto I/O](#nomi-dei-file-e-contratto-io)
+8. [Opzioni comuni](#opzioni-comuni)
+9. [Identità e nomi degli oggetti in output](#identità-e-nomi-degli-oggetti-in-output)
+10. [Pipeline di scrittura e validazione](#pipeline-di-scrittura-e-validazione)
+11. [Errori e log](#errori-e-log)
+12. [I comandi in dettaglio](#i-comandi-in-dettaglio)
+13. [Linter](#linter)
+14. [Architettura](#architettura)
+15. [File principali del modulo](#file-principali-del-modulo)
+16. [Test](#test)
+17. [Limiti noti](#limiti-noti)
 
 ---
 
@@ -131,6 +132,100 @@ flowchart LR
 
 ---
 
+## Formati: classico e v2
+
+La dashboard esiste in due dialetti JSON. Il tool li conosce entrambi, ma **lavora su un solo modello interno**: il JSON model classico, esteso con i tab.
+
+```mermaid
+flowchart LR
+    FC["file classico"]
+    FV["file v2<br/>elements + layout"]
+    CAN["modello canonico<br/>panels/rows + _tabs/_tab/_element"]
+    CMD["comando<br/>row / panel"]
+    RC["file classico"]
+    RV["file v2"]
+
+    FC -->|"formats.load"| CAN
+    FV -->|"formats.load"| CAN
+    CAN -->|"modify"| CMD
+    CMD -->|"formats.render"| RC
+    CMD -->|"formats.render"| RV
+```
+
+Nessun comando sa che cosa siano `elements` o `layout`: le due sole porte sono `formats.load` (chiamata da `BaseCommand.load`) e `formats.render` (chiamata da `persist.save_and_validate`). Il test `PurityTest` in `tests/test_convert.py` fallisce se una di quelle chiavi compare fuori da `schema.py` e `formats/`.
+
+### Riconoscimento del formato
+
+| Marcatore | Formato |
+| --- | --- |
+| `elements` (dict) **e** `layout` (dict) | `schema.V2` |
+| `panels` (lista) **o** `rows` (lista) | `schema.CLASSIC` |
+| nient'altro | `schema.UNKNOWN` → `InputError`, exit 2 |
+
+Il rifiuto è deliberato: applicare a un file v2 gli attraversamenti del classico non produce un errore, produce zero righe e zero pannelli, quindi una validazione verde su una dashboard mai letta.
+
+### Metadati interni
+
+| Chiave | Dove | Contenuto |
+| --- | --- | --- |
+| `_tabs` | radice | `[{"id": 1, "title": "..."}]`, sempre almeno un elemento |
+| `_tab` | riga | id del tab di appartenenza |
+| `_element` | pannello | nome dell'elemento nella mappa `elements` |
+| `_extras` | radice | `cursorSync`, `preload`, `liveNow` |
+
+`schema.strip_internal` le rimuove per elenco esplicito, non per prefisso: il JSON di Grafana usa normalmente chiavi come `__systemRef`, che un `startswith("_")` cancellerebbe.
+
+Una dashboard classica riceve un tab implicito con il titolo della dashboard (`schema.ensure_tabs`), così l'uscita v2 mostra una linguetta leggibile invece del vuoto.
+
+### Tab: il terzo contenitore
+
+Un tab non è un oggetto del JSON classico: vive solo nei metadati (`_tabs`, `row["_tab"]`). `tabs.py` è il modulo puro che li legge e li modifica; `objects.py` li espone dietro lo stesso `Target` di righe e pannelli, quindi `delete tab` e `delete row` si somigliano.
+
+| Regola | Dove |
+| --- | --- |
+| ogni riga appartiene a un tab (default: il primo) | `tabs.assign`, `objects.set_tab` |
+| un pannello segue la riga che lo contiene | `objects.tab_of_target` |
+| i pannelli fuori riga sono del primo tab | `tabs.panels_of` |
+| l'ultimo tab non si elimina | `tabs.remove` |
+| l'ordine dentro un tab è quello della lista `panels` | `tabs.rows_of`, `objects.set_tab` |
+
+`objects.set_tab` non si limita a scrivere `row["_tab"]`: stacca il blocco della riga e lo riaccoda dopo l'ultima riga del tab di destinazione. Cambiare solo il metadato lascerebbe la riga nella posizione globale di prima, che rispetto al nuovo tab è arbitraria.
+
+In uscita v2 una riga che dichiara un tab inesistente finisce nel primo tab (`layout._rows_by_tab`) e la cosa viene dichiarata nel report (`formats._report_stray_rows`): perdere una riga per un metadato incoerente sarebbe il peggior esito possibile di una conversione.
+
+### Il package `formats/`
+
+Un adattatore per elemento, puro: dizionari in ingresso, dizionari in uscita, nessun I/O e nessun `argparse`.
+
+| Modulo | Classico | v2 |
+| --- | --- | --- |
+| `dashboard.py` | `time`, `timezone`, `refresh`, `timepicker`, `annotations.list`, `links`, `tags` | `timeSettings`, `annotations[]`, `links`, `tags`, più `cursorSync`/`preload`/`liveNow` |
+| `variables.py` | `templating.list[].type` | `variables[].kind` + `spec` |
+| `panel.py` | `type`, `fieldConfig`, `options`, `transparent` | `vizConfig.group`, `vizConfig.spec` |
+| `queries.py` | `targets[]`, `transformations[]`, `queryOptions` | `data.spec.queries[].spec.query`, `data.spec.transformations` |
+| `layout.py` | righe e `gridPos` | `layout` (tab → righe → griglia) ed `elements` |
+
+`layout.read_tree` restituisce tab, righe e posizioni anche quando una riga è **vuota**: lo schema v2 sa rappresentarla, quindi scartarla sarebbe una perdita silenziosa.
+
+### Fedeltà dichiarata
+
+Ogni volta che una conversione non è esatta, `formats.Report` raccoglie la perdita e il comando la stampa (in ingresso subito dopo `load`, in uscita dentro `persist`).
+
+| Situazione | Direzione | Esito |
+| --- | --- | --- |
+| pannello, query, riga, variabile, tempo, link, annotazione | ↔ | esatta |
+| pannello fuori riga | → v2 | riga sintetica senza titolo |
+| `uid`, `id`, `version` | → v2 | rimossi, dichiarati nel report |
+| `vizConfig.version` | → v2 | rigenerato con la versione supportata |
+| `target` di un'annotazione | → v2 | appiattito nel corpo della query, dichiarato |
+| più di un tab | → classico | **errore**, exit 2, nessun file |
+| regola di alert legacy | → v2 | **errore**, salvo `--drop-alerts` |
+| stesso elemento in due posizioni | → classico | **errore** |
+
+Gli errori sono tali perché il formato di destinazione non ha una forma per quel contenuto: procedere significherebbe cancellare dati con un report verde.
+
+---
+
 ## Modello dei comandi
 
 Tutti i comandi hanno la stessa forma:
@@ -139,16 +234,17 @@ Tutti i comandi hanno la stessa forma:
 grafana-utils <verbo> <tipo> <file> [selettori] [impostazioni]
 ```
 
-Il blocco CRUD è **unificato**: non esiste un comando per tipo di oggetto. Il tipo è un argomento posizionale con `choices=("row", "panel")`, aggiunto da `cli_common.add_kind_argument`.
+Il blocco CRUD è **unificato**: non esiste un comando per tipo di oggetto. Il tipo è un argomento posizionale con `choices=("row", "panel", "tab")`, aggiunto da `cli_common.add_kind_argument`.
 
 | Comando | Cosa fa | Tipo | Scrive | Valida |
 | --- | --- | --- | --- | --- |
-| `list` | Elenca righe o pannelli | `row`/`panel` | no | no |
-| `create` | Crea da `--from-id` o `--template` | `row`/`panel` | sì | sì |
-| `update` | Aggiorna titolo, stato, query, datasource | `row`/`panel` | sì | sì |
-| `delete` | Elimina righe o pannelli | `row`/`panel` | sì | sì |
-| `move` | Sposta righe o pannelli | `row`/`panel` | sì | sì |
-| `extract` | Estrae un oggetto in una dashboard minima | `row`/`panel` | sì | sì |
+| `list` | Elenca tab, righe o pannelli | `tab`/`row`/`panel` | no | no |
+| `create` | Crea da `--from-id` o `--template` (un tab dal titolo) | `tab`/`row`/`panel` | sì | sì |
+| `update` | Aggiorna titolo, stato, query, datasource | `tab`/`row`/`panel` | sì | sì |
+| `delete` | Elimina tab, righe o pannelli | `tab`/`row`/`panel` | sì | sì |
+| `move` | Sposta tab, righe o pannelli | `tab`/`row`/`panel` | sì | sì |
+| `extract` | Estrae un oggetto in una dashboard minima | `tab`/`row`/`panel` | sì | sì |
+| `fork` | Copia l'intera dashboard in una nuova | — | sì | sì |
 | `layout` | Ricalcola i `gridPos` | — | sì | sì |
 | `validate` | Struttura + lint | — | no | sì |
 | `lint` | Solo regole di best practice | — | no | solo lint |
@@ -157,22 +253,23 @@ I comandi sostituiti dalla 5.0: `list-rows`, `list-panels`, `duplicate-row`, `co
 
 ### Matrice di simmetria
 
-| Operazione | `row` | `panel` | Note |
-| --- | --- | --- | --- |
-| `list` | sì | sì | |
-| `create --from-id` | sì | sì | |
-| `create --template` | sì | sì | per le righe esiste un template predefinito |
-| `update --title` | sì | sì | |
-| `update --replace` | sì | sì | su una riga vale per tutti i suoi pannelli |
-| `update --datasource` | sì | sì | su una riga vale per tutti i suoi pannelli |
-| `update --collapsed/--expanded` | sì | no | un pannello non è un contenitore |
-| `delete` | sì | sì | |
-| `delete --keep-children` | sì | no | un pannello non ha figli propri |
-| `move --position/--before/--after` | sì | sì | |
-| `move --to-row` | no | sì | le righe non si annidano |
-| `extract` | sì | sì | |
+| Operazione | `tab` | `row` | `panel` | Note |
+| --- | --- | --- | --- | --- |
+| `list` | sì | sì | sì | |
+| `create --from-id` | no | sì | sì | un tab nasce solo dal titolo |
+| `create --template` | no | sì | sì | per le righe esiste un template predefinito |
+| `update --title` | sì | sì | sì | |
+| `update --replace` | sì | sì | sì | su tab e riga vale per tutti i pannelli contenuti |
+| `update --datasource` | sì | sì | sì | su tab e riga vale per tutti i pannelli contenuti |
+| `update --collapsed/--expanded` | no | sì | no | un tab non si richiude |
+| `delete` | sì | sì | sì | l'ultimo tab non si elimina |
+| `delete --keep-children` | sì | sì | no | su un tab conserva le righe, su una riga i pannelli |
+| `move --position/--before/--after` | sì | sì | sì | |
+| `move --to-tab` | no | sì | no | un pannello segue la riga che lo contiene |
+| `move --to-row` | no | no | sì | i tab non si annidano |
+| `extract` | sì | sì | sì | |
 
-Le due asimmetrie sono strutturali. In entrambi i casi il comando **rifiuta** l'opzione con un `ValueError` esplicito, invece di ignorarla.
+Le asimmetrie sono strutturali. In tutti i casi il comando **rifiuta** l'opzione con un `ValueError` esplicito, invece di ignorarla.
 
 ---
 
@@ -186,10 +283,13 @@ Gli stessi quattro selettori valgono per ogni verbo e per ogni tipo. `cli_common
 | `--match-title REGEX` | regex | `args.match_title` | sempre | `re.search` sul titolo, sempre `IGNORECASE` |
 | `--match-type TIPO` | stringa | `args.match_type` | solo `panel` | Confronto con `type` via `casefold` |
 | `--in-row N` | int | `args.in_row` | solo `panel` | Limita ai pannelli della riga |
+| `--in-tab N` | int | `args.in_tab` | `row` e `panel` | Limita alle righe (o ai pannelli) del tab |
 
 Regola mnemonica: **`--match-*` seleziona, le altre opzioni impostano**. `--title` è il nuovo titolo, `--match-title` è il filtro.
 
-La validazione vive in `objects.select_targets`, che solleva `ValueError` per `--in-row`/`--match-type` usati con `row` e per gli id mancanti. Se un `--id` appartiene a una riga ma è stato chiesto `panel`, il messaggio suggerisce il tipo giusto.
+La validazione vive in `objects.select_targets`, che solleva `ValueError` per `--in-row`/`--match-type` usati con `row` o `tab`, per `--in-tab` usato con `tab` e per gli id mancanti. Se un `--id` appartiene a una riga ma è stato chiesto `panel`, il messaggio suggerisce il tipo giusto.
+
+I cinque comandi CRUD non chiamano `select_targets` direttamente: usano `objects.targets_from_args(db, args)`. I selettori sono gli stessi per tutti, quindi un selettore nuovo si aggiunge in un punto solo.
 
 `objects.require_selector` impedisce le operazioni distruttive senza criterio: `delete`, `move` ed `extract` non partono senza almeno un selettore. `list` e `update` senza selettori lavorano su tutti gli oggetti del tipo.
 
@@ -197,37 +297,44 @@ La validazione vive in `objects.select_targets`, che solleva `ValueError` per `-
 
 ## `objects.py`: righe e pannelli intercambiabili
 
-Il modulo è il livello che rende i due tipi intercambiabili. Non conosce argparse.
+Il modulo è il livello che rende i tre tipi intercambiabili. Non conosce argparse.
 
 ```python
 ROW = "row"
 PANEL = "panel"
+TAB = "tab"
+CONTAINERS = (ROW, TAB)
 
 @dataclass
 class Target:
-    kind: str                      # ROW | PANEL
-    obj: dict                      # il pannello o la riga
+    kind: str                      # TAB | ROW | PANEL
+    obj: dict                      # il tab, la riga o il pannello
     parent: dict | None = None     # riga contenitrice (pannelli)
 
 def select_targets(db, kind, *, ids=(), match_title=None,
-                   match_type=None, in_row=None) -> list[Target]: ...
+                   match_type=None, in_row=None, in_tab=None) -> list[Target]: ...
+def targets_from_args(db, args) -> list[Target]: ...
+def tab_of_target(db, target) -> int: ...
 def find_target(db, kind, obj_id) -> Target: ...
 def content_panels(db, target) -> list[dict]: ...
 def set_title(db, target, title, *, dedupe=False) -> str: ...
 def set_collapsed(db, target, collapsed) -> None: ...
+def set_tab(db, target, tab_id) -> None: ...
 def remove(db, target, *, keep_children=False) -> int: ...
 def move_panel(db, target, row_id, *, position="bottom") -> None: ...
 def move_panel_relative(db, target, anchor_id, *, after) -> None: ...
 def insert_in_row(db, row, panel, *, position="bottom") -> None: ...
 def move_row(db, target, *, before=None, after=None, position="bottom") -> None: ...
+def move_tab(db, target, *, before=None, after=None, position="bottom") -> None: ...
 ```
 
 Punti chiave:
 
 - **`Target` non memorizza indici**: le posizioni sono risolte di nuovo a ogni modifica con `find_row_container`/`find_panel_container`. Così elimina o sposta più oggetti in sequenza senza indici stantii.
-- **`content_panels`** è la definizione unica di "contenuto": per un pannello è il pannello stesso (più gli annidati), per una riga sono tutti i suoi pannelli. Le righe sono sempre escluse. È il motivo per cui `update row --replace` e `update panel --replace` funzionano allo stesso modo.
-- **`remove`** con `keep_children` promuove i figli di una riga a top-level; per lo schema legacy li sposta in `db["panels"]`, perché `db["rows"]` contiene solo righe.
+- **`content_panels`** è la definizione unica di "contenuto": per un pannello è il pannello stesso (più gli annidati), per una riga i suoi pannelli, per un tab quelli di tutte le righe. I contenitori sono sempre esclusi: è il motivo per cui `update tab --replace` e `update row --replace` funzionano allo stesso modo.
+- **`remove`** con `keep_children` promuove i figli di una riga a top-level e trasferisce le righe di un tab al primo tab rimasto; per lo schema legacy li sposta in `db["panels"]`, perché `db["rows"]` contiene solo righe.
 - **`move_panel`** reimplementa la destinazione tramite `insert_in_row`, condivisa con `create`.
+- **`set_tab`** non si limita a scrivere `row["_tab"]`: stacca il blocco della riga e lo riaccoda dopo l'ultima riga del tab di destinazione, perché l'ordine dentro un tab è quello della lista `panels`.
 
 ---
 
@@ -277,7 +384,7 @@ I due soli `<TIPO>` che compaiono nel nome del file sono `VALIDATION_ERROR` e `L
 | `add_file_argument` | argomento posizionale `file` |
 | `add_kind_argument` | argomento posizionale `kind` con `choices=("row","panel")` |
 | `add_selectors` | `--id`, `--match-title`, `--match-type`, `--in-row` |
-| `add_write_options` | `-o/--output`, `--dry-run`, `--severity` |
+| `add_write_options` | `-o/--output`, `--dry-run`, `--to-format`, `--drop-alerts`, `--severity` |
 | `add_severity_option` | `--severity` (usato anche da `validate` e `lint`) |
 | `add_format_option` | `--format text\|json` (usato da `list` e `lint`) |
 | `add_title_option` | `--title` |
@@ -487,6 +594,7 @@ Per i pannelli `--to-row` sposta in un'altra riga (`objects.move_panel`, che usa
 ```bash
 grafana-utils extract row   dashboard.json --id 125 -o vista.json
 grafana-utils extract panel dashboard.json --id 12  -o pannello.json
+grafana-utils extract tab   dashboard-v2.json --id 2 -o sistemistica.json --to-format v2
 grafana-utils extract row   dashboard.json --match-title "Sistemistica" --existing-dashboards inv.json
 ```
 
@@ -498,9 +606,38 @@ grafana-utils extract row   dashboard.json --match-title "Sistemistica" --existi
 | `--base-id N` | int | `max + 1` della sorgente | opzionale |
 | `--dedupe-titles` | flag | off | opzionale |
 
-Accetta **un solo oggetto**: con più match è un errore. Una riga espansa conserva la forma originale (riga + fratelli top-level), una collassata i figli annidati; un pannello produce una dashboard con un solo pannello e `gridPos` di default `{h: 8, w: 12, x: 0, y: 0}`.
+Accetta **un solo oggetto**: con più match è un errore. Una riga espansa conserva la forma originale (riga + fratelli top-level), una collassata i figli annidati; un pannello produce una dashboard con un solo pannello e `gridPos` di default `{h: 8, w: 12, x: 0, y: 0}`; un tab porta tutte le sue righe, che vengono riassegnate al tab implicito della dashboard minima.
 
-Note implementative: `_block` costruisce le radici, poi il comando riassegna gli id in sequenza da `--base-id` (o `get_max_id(sorgente) + 1`), disambigua i titoli, trasla `gridPos` con `shift_grid_y` perché parta da `y = 0`, costruisce la dashboard con `dashboard_factory.minimal_dashboard` (che eredita `time`, `timezone`, `refresh`, `templating`, `schemaVersion`) e la sigilla con `seal_new_dashboard`.
+Note implementative: `_block` costruisce le radici (`_row_block` per riga, ripetuto per ogni riga di un tab), poi il comando riassegna gli id in sequenza da `--base-id` (o `get_max_id(sorgente) + 1`), disambigua i titoli, trasla `gridPos` con `shift_grid_y` perché parta da `y = 0`, costruisce la dashboard con `dashboard_factory.minimal_dashboard` (che eredita `time`, `timezone`, `refresh`, `templating`, `schemaVersion`) e la sigilla con `seal_new_dashboard`.
+
+### `fork`
+
+```bash
+grafana-utils fork dashboard.json -o copia.json
+grafana-utils fork dashboard.json --title "Vista 2" --existing-dashboards inv.json
+grafana-utils fork dashboard-v2.json --to-format v2 -o copia-v2.json
+```
+
+| Opzione | Tipo | Default | Obbligo / dipendenze |
+| --- | --- | --- | --- |
+| `--title T` | stringa | titolo attuale, reso unico | opzionale |
+| `--uid U` | stringa | generato | opzionale |
+| `--existing-dashboards FILE` | path | — | opzionale |
+| `--keep-library` | flag | off | opzionale |
+| `--keep-alerts` | flag | off | opzionale |
+| `--strip-links` | flag | off | opzionale |
+
+Tre passaggi, in quest'ordine, dentro `modify`:
+
+1. `identity.detach_bindings`: toglie `libraryPanel`, `alert`/`alertId` e, se richiesto, `links`;
+2. `identity.renumber_dashboard`: riassegna gli id da 1 in ordine di documento;
+3. `identity.seal_new_dashboard`: uid nuovo, `id` nullo, `version` 1, titolo unico.
+
+L'ordine conta: i nomi degli elementi v2 (`_element`) vengono rimossi prima della sigillatura, così `panel-<id>` segue i nuovi id invece di ricordare quelli della sorgente.
+
+La sorgente esiste ancora, quindi il suo `uid` e il suo titolo sono considerati occupati (`identity.extend_text` su entrambi): una copia non può chiamarsi come l'originale.
+
+Con `--to-format v2` la sigillatura avviene con `identify=False`: lo schema v2 non prevede `uid`, `id` né `version`, e scriverli per poi rimuoverli produrrebbe un report di perdita inutile. Il comando legge il formato di uscita da `args.target_format`, risolto da `WriteCommand.run` prima di `modify`.
 
 ### `layout`, `validate`, `lint`
 
@@ -544,9 +681,15 @@ grafana/
 │   └── full_dashbaord.json        # dashboard di produzione (6 righe, 90 pannelli)
 ├── tests/                         # suite unittest
 │   ├── support.py                 # fixture e runner CLI
+│   ├── fixtures/
+│   │   └── dashboard-v2.json      # dashboard schema v2 (2 tab, 3 pannelli)
 │   ├── test_objects.py            # selezione e operazioni comuni row/panel
 │   ├── test_crud.py               # matrice create/update/delete/move/extract
 │   ├── test_commands_read.py      # list, validate, lint
+│   ├── test_schema.py             # riconoscimento formato e metadati interni
+│   ├── test_convert.py            # conversione classico ↔ v2, round-trip, guardie
+│   ├── test_tabs.py               # terzo tipo: selezione, CRUD, estrazione
+│   ├── test_fork.py               # copia integrale senza identità né vincoli
 │   ├── test_layout.py
 │   └── test_integration_example.py
 └── grafana_tool/
@@ -555,7 +698,16 @@ grafana/
     ├── cli.py               → argparse + dispatch + exit code + log
     ├── cli_common.py        → opzioni condivise (tipo, selettori, valori)
     ├── command_base.py      → BaseCommand, ReadCommand, WriteCommand
-    ├── objects.py           → Target, selezione e operazioni row/panel
+    ├── schema.py            → riconoscimento formato, metadati interni, strip
+    ├── formats/             → conversione classico ↔ v2 (adattatori puri)
+    │   ├── __init__.py      → Report, load, render, guardie
+    │   ├── dashboard.py     → tempo, annotazioni, link, extra
+    │   ├── variables.py     → templating.list ↔ variables
+    │   ├── panel.py         → pannello e vizConfig
+    │   ├── queries.py       → targets ↔ queries, trasformazioni
+    │   └── layout.py        → gridPos ↔ GridLayout, tab e righe
+    ├── objects.py           → Target, selezione e operazioni tab/row/panel
+    ├── tabs.py              → tab come contenitori: righe, ordine, rimozione
     ├── model.py             → traversal righe/pannelli, blocchi, gridPos
     ├── selection.py         → PanelMatcher: criterio tipo/titolo
     ├── identity.py          → uid, titoli unici, id dei pannelli
@@ -578,6 +730,7 @@ grafana/
         ├── delete.py        → DeleteCommand (WriteCommand)
         ├── move.py          → MoveCommand (WriteCommand)
         ├── extract.py       → ExtractCommand (WriteCommand)
+        ├── fork.py          → ForkCommand (WriteCommand)
         ├── layout.py        → LayoutCommand (WriteCommand)
         ├── validate.py      → ValidateCommand (ReadCommand)
         └── lint.py          → LintCommand (ReadCommand)
@@ -587,7 +740,8 @@ grafana/
 
 | Principio | Dove | Scelta |
 | --- | --- | --- |
-| **Single Responsibility Principle** | Ogni modulo | `io` = serializzazione, `model` = traversal, `objects` = operazioni comuni ai due tipi, `selection` = criteri di match, `linter` = regole, `persist` = pipeline, `errors` = classificazione/log, `identity` = uid/titoli/id, `datasource` = blocchi datasource, `dashboard_factory` = dashboard minime, `command_base` = scheletro dei comandi. |
+| **Single Responsibility Principle** | Ogni modulo | `io` = serializzazione, `model` = traversal, `objects` = operazioni comuni ai due tipi, `selection` = criteri di match, `linter` = regole, `persist` = pipeline, `errors` = classificazione/log, `identity` = uid/titoli/id, `datasource` = blocchi datasource, `dashboard_factory` = dashboard minime, `schema` = riconoscimento formato, `formats` = conversione, `command_base` = scheletro dei comandi. |
+| **Adapter per elemento** | `formats/` | Un modulo per famiglia di dati (dashboard, variabili, pannello, query, layout), ognuno puro e con la propria fedeltà dichiarata. Aggiungere un campo significa toccare un adattatore, non un convertitore monolitico. |
 | **Template Method** | `command_base.ReadCommand`, `WriteCommand` | Lo scheletro `load → perform` e `load → deep-copy → modify → save_and_validate` è definito una volta sola. I comandi implementano solo `add_arguments`, `perform` o `modify`. |
 | **Strategy per tipo** | `objects.py` | Un `Target` conosce il proprio `kind`; le operazioni scelgono il ramo giusto e condividono selezione, contenuto, rimozione e spostamento. Nessun `if kind == ...` sparso nei comandi. |
 | **Value Object** | `selection.PanelMatcher`, `objects.Target` | Criterio e oggetto selezionato sono oggetti piccoli e immutabili per il matcher, con un solo metodo pubblico. |
@@ -614,6 +768,8 @@ flowchart TD
     VALID["validation.py<br/>struttura + lint"]
     LINT["linter.py<br/>regole"]
     ERR["errors.py<br/>suffissi + log"]
+    FORMATS["formats/<br/>classico ↔ v2"]
+    SCHEMA["schema.py<br/>detect, metadati, strip"]
 
     CLI -->|dispatch| CMD
     CLI -->|"InputError / OutputError"| IO
@@ -630,6 +786,10 @@ flowchart TD
     OBJ -->|"criterio titolo"| MODEL
     BASE --> IO
     BASE --> PERSIST
+    BASE -->|"load: formato → canonico"| FORMATS
+    PERSIST -->|"render: canonico → formato"| FORMATS
+    FORMATS --> SCHEMA
+    FORMATS --> MODEL
     SEL --> MODEL
     PERSIST --> IO
     PERSIST --> VALID

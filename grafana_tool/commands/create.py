@@ -1,12 +1,13 @@
-"""create: crea una riga o un pannello.
+"""create: crea un tab, una riga o un pannello.
 
-Due sorgenti possibili, uguali per entrambi i tipi:
+Due sorgenti possibili per righe e pannelli, uguali per entrambi i tipi:
 
   - `--from-id N` copia un oggetto esistente (con i suoi figli);
   - `--template FILE` istanzia un template, applicando `${...}` e `--replace`.
 
 Per le righe il template ha un default, quindi `create row` senza sorgente
 riproduce la riga di sistema; per i pannelli la sorgente è obbligatoria.
+Un tab non ha sorgente: nasce dal suo titolo.
 """
 from __future__ import annotations
 
@@ -15,13 +16,14 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from grafana_tool import objects
+from grafana_tool import objects, tabs
 from grafana_tool.cli_common import (
     add_collapsed_options,
     add_dedupe_option,
     add_kind_argument,
     add_replace_option,
     add_title_option,
+    add_to_tab_option,
 )
 from grafana_tool.command_base import WriteCommand
 from grafana_tool.identity import (
@@ -114,7 +116,7 @@ def _build_params(args: argparse.Namespace) -> dict[str, str]:
 
 class CreateCommand(WriteCommand):
     NAME = "create"
-    HELP = "Crea una riga o un pannello da un oggetto esistente o da un template"
+    HELP = "Crea un tab, una riga o un pannello da un oggetto esistente o da un template"
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         add_kind_argument(parser)
@@ -133,6 +135,7 @@ class CreateCommand(WriteCommand):
             "--to-row", dest="to_row", type=int, metavar="N",
             help="Riga di destinazione del nuovo pannello",
         )
+        add_to_tab_option(parser)
         parser.add_argument(
             "--position", choices=["top", "bottom"], default="bottom",
             help="In cima o in fondo alla dashboard/riga (default: bottom)",
@@ -165,6 +168,12 @@ class CreateCommand(WriteCommand):
     def _source(args: argparse.Namespace) -> tuple[str, str | None]:
         if args.from_id is not None and args.template is not None:
             raise ValueError("Usare --from-id oppure --template, non entrambi.")
+        if args.kind == objects.TAB:
+            if args.from_id is not None or args.template is not None:
+                raise ValueError(
+                    "Un tab nasce dal suo titolo: non si copia da --from-id né da un template."
+                )
+            return "none", None
         if args.from_id is not None:
             return "from-id", None
         if args.template is not None:
@@ -258,6 +267,11 @@ class CreateCommand(WriteCommand):
         base_id = self._assign_ids(db, row, args)
         row["collapsed"] = bool(args.collapsed)
 
+        # Destinazione: il tab indicato, altrimenti il primo. Una riga nasce
+        # sempre dentro un tab: il modello canonico non ammette righe orfane.
+        tab_id = args.to_tab if args.to_tab is not None else tabs.first_id(db)
+        tabs.assign(db, [row], tab_id)
+
         renamed = dedupe_panel_titles([row], all_titles(db)) if args.dedupe_titles else 0
         return row, renamed
 
@@ -308,6 +322,10 @@ class CreateCommand(WriteCommand):
 
         if args.on_existing is not None:
             raise ValueError("--on-existing vale solo per i template di riga.")
+        if args.to_tab is not None:
+            raise ValueError(
+                "--to-tab vale solo per le righe: un pannello segue la riga che lo contiene."
+            )
 
         panel["title"] = self._title(db, args, default_title)
         apply_in_panel(panel, parse_replacements(args.replace))
@@ -333,10 +351,30 @@ class CreateCommand(WriteCommand):
             where = "in fondo alla dashboard"
         print(f"Pannello '{panel['title']}' creato con id {panel['id']} {where}.")
 
+    # ------------------------------------------------------------- tab
+
+    def _build_tab(self, db: dict, args: argparse.Namespace) -> dict:
+        """Crea un tab: solo titolo e posizione, nessuna sorgente."""
+        default = f"Tab {tabs.next_id(db)}"
+        title = (args.title if args.title is not None else default).strip()
+        if not title:
+            raise ValueError("--title non può essere vuoto.")
+        if args.dedupe_titles:
+            taken = {tab.get("title") or "" for tab in tabs.all_tabs(db)}
+            title = unique_title(title, taken)
+
+        tab = {"id": tabs.next_id(db), "title": title}
+        tabs.insert(db, tab, position=args.position)
+        print(f"Tab '{title}' creato con id {tab['id']}.")
+        return tab
+
     # ----------------------------------------------------------- modify
 
     def modify(self, db: dict, args: argparse.Namespace) -> dict:
         source = self._source(args)
+        if args.kind == objects.TAB:
+            self._build_tab(db, args)
+            return db
         if args.kind == objects.ROW:
             built = self._build_row(db, args, source)
             if built is None:  # --on-existing skip

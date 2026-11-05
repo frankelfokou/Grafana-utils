@@ -22,9 +22,10 @@ import argparse
 import copy
 from typing import Any
 
+from grafana_tool import formats
 from grafana_tool.cli_common import add_file_argument, add_write_options
 from grafana_tool.io import load_dashboard
-from grafana_tool.persist import save_and_validate
+from grafana_tool.persist import resolve_target_format, save_and_validate
 
 
 class BaseCommand:
@@ -58,6 +59,17 @@ class BaseCommand:
         """Esegue il comando. Le sottoclassi ridefiniscono questo metodo."""
         raise NotImplementedError
 
+    def load(self, args: argparse.Namespace) -> formats.Loaded:
+        """Legge il file e lo porta nel modello canonico.
+
+        Il formato viene riconosciuto qui: un file che il tool non sa
+        interpretare si ferma adesso, con exit code 2, invece di produrre
+        report verdi su una dashboard mai letta.
+        """
+        loaded = formats.load(load_dashboard(args.file), command=self.NAME)
+        _print_report(loaded.report)
+        return loaded
+
 
 class ReadCommand(BaseCommand):
     """Comando che legge la dashboard senza produrre un file di output."""
@@ -71,7 +83,7 @@ class ReadCommand(BaseCommand):
 
     def run(self, args: argparse.Namespace) -> int | None:
         """Template method: load → perform."""
-        return self.perform(load_dashboard(args.file), args)
+        return self.perform(self.load(args).db, args)
 
 
 class WriteCommand(BaseCommand):
@@ -95,7 +107,20 @@ class WriteCommand(BaseCommand):
             print(f"Titoli pannelli disambiguati: {count}.")
 
     def run(self, args: argparse.Namespace) -> int:
-        """Template method: load → deep-copy → modify → save_and_validate."""
-        db = copy.deepcopy(load_dashboard(args.file))
+        """Template method: load → deep-copy → modify → save_and_validate.
+
+        Il formato di uscita viene risolto prima di `modify`: un comando che
+        deve adattarsi al formato (es. `fork`, che assegna uid solo al
+        classico) lo trova già in `args.target_format`.
+        """
+        loaded = self.load(args)
+        args.target_format = resolve_target_format(args, loaded)
+        db = copy.deepcopy(loaded.db)
         db = self.modify(db, args)
-        return save_and_validate(db, args)
+        return save_and_validate(db, args, loaded)
+
+
+def _print_report(report: formats.Report) -> None:
+    """Stampa le perdite dichiarate dalla conversione di ingresso."""
+    for line in report.lines():
+        print(line)

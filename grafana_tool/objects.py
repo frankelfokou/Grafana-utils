@@ -1,16 +1,18 @@
-"""objects: righe e pannelli dietro un'unica interfaccia.
+"""objects: righe, pannelli e tab dietro un'unica interfaccia.
 
 I comandi CRUD non sono più uno per tipo di oggetto: `list`, `create`,
-`update`, `delete`, `move` ed `extract` ricevono `row` o `panel` come primo
-argomento e lavorano su un `Target`, cioè un oggetto con la sua posizione
-nella dashboard.
+`update`, `delete`, `move` ed `extract` ricevono `row`, `panel` o `tab`
+come primo argomento e lavorano su un `Target`, cioè un oggetto con la sua
+posizione nella dashboard.
 
-Qui vive tutto ciò che è comune ai due tipi:
+Qui vive tutto ciò che è comune ai tre tipi:
 
-  - la selezione (`--id`, `--match-title`, `--match-type`, `--in-row`);
-  - i pannelli di contenuto di un oggetto (per una riga, i discendenti);
+  - la selezione (`--id`, `--match-title`, `--match-type`, `--in-row`, `--in-tab`);
+  - i pannelli di contenuto di un oggetto (per una riga, i discendenti;
+    per un tab, quelli di tutte le sue righe);
   - la rimozione, con o senza figli;
-  - lo spostamento: una riga tra le righe, un pannello dentro una riga.
+  - lo spostamento: un tab tra i tab, una riga tra le righe o dentro un
+    altro tab, un pannello dentro una riga.
 
 Le operazioni che non hanno senso per un tipo vengono rifiutate con un
 messaggio esplicito invece di essere ignorate in silenzio.
@@ -20,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from grafana_tool import schema, tabs
 from grafana_tool.identity import all_titles, unique_title
 from grafana_tool.model import (
     append_to_row_block,
@@ -38,11 +41,15 @@ from grafana_tool.selection import PanelMatcher
 
 ROW = "row"
 PANEL = "panel"
-KINDS = (ROW, PANEL)
+TAB = "tab"
+KINDS = (ROW, PANEL, TAB)
 
-NOUN = {ROW: "riga", PANEL: "pannello"}
-PLURAL = {ROW: "righe", PANEL: "pannelli"}
-IN_ROW_HINT = {ROW: "riga", PANEL: "pannello"}
+NOUN = {ROW: "riga", PANEL: "pannello", TAB: "tab"}
+PLURAL = {ROW: "righe", PANEL: "pannelli", TAB: "tab"}
+IN_ROW_HINT = {ROW: "riga", PANEL: "pannello", TAB: "tab"}
+CONTAINERS = (ROW, TAB)
+
+ARTICLE = {ROW: "Nessuna", PANEL: "Nessun", TAB: "Nessun"}
 
 
 def describe(kind: str, obj: dict[str, Any]) -> str:
@@ -86,6 +93,10 @@ def iter_targets(db: dict[str, Any], kind: str) -> Iterable[Target]:
         for row in iter_rows(db):
             yield Target(ROW, row, None)
         return
+    if kind == TAB:
+        for tab in tabs.all_tabs(db):
+            yield Target(TAB, tab, None)
+        return
     for _, _, panel, row in iter_panel_slots(db):
         yield Target(PANEL, panel, row)
 
@@ -104,7 +115,10 @@ def require_selector(
 
 
 def _validate_selectors(
-    kind: str, match_type: str | None, in_row: int | None
+    kind: str,
+    match_type: str | None,
+    in_row: int | None,
+    in_tab: int | None = None,
 ) -> None:
     if match_type is not None and kind != PANEL:
         raise ValueError(
@@ -112,6 +126,8 @@ def _validate_selectors(
         )
     if in_row is not None and kind != PANEL:
         raise ValueError("--in-row vale solo per i pannelli: le righe non si annidano.")
+    if in_tab is not None and kind == TAB:
+        raise ValueError("--in-tab vale per righe e pannelli, non per i tab.")
 
 
 def _missing_ids(db: dict[str, Any], kind: str, missing: list[int]) -> str:
@@ -120,8 +136,7 @@ def _missing_ids(db: dict[str, Any], kind: str, missing: list[int]) -> str:
         if rows:
             return f"Id {rows} ∈ riga: usare il tipo `row`."
     if len(missing) == 1:
-        article = "Nessuna" if kind == ROW else "Nessun"
-        return f"{article} {NOUN[kind]} con id {missing[0]}."
+        return f"{ARTICLE[kind]} {NOUN[kind]} con id {missing[0]}."
     return f"{PLURAL[kind].capitalize()} non trovate/i: {missing}."
 
 
@@ -133,11 +148,14 @@ def select_targets(
     match_title: str | None = None,
     match_type: str | None = None,
     in_row: int | None = None,
+    in_tab: int | None = None,
 ) -> list[Target]:
     """Applica i selettori della CLI agli oggetti del tipo indicato."""
-    _validate_selectors(kind, match_type, in_row)
+    _validate_selectors(kind, match_type, in_row, in_tab)
     if in_row is not None:
         require_row(db, in_row)
+    if in_tab is not None:
+        tabs.require(db, in_tab)
 
     wanted = list(dict.fromkeys(int(i) for i in ids))
     wanted_set = set(wanted)
@@ -151,12 +169,42 @@ def select_targets(
             continue
         if in_row is not None and (target.parent is None or target.parent.get("id") != in_row):
             continue
+        if in_tab is not None and tab_of_target(db, target) != in_tab:
+            continue
         found.append(target)
 
     missing = [i for i in wanted if i not in {t.id for t in found}]
     if missing:
         raise ValueError(_missing_ids(db, kind, missing))
     return found
+
+
+def tab_of_target(db: dict[str, Any], target: Target) -> int:
+    """Tab di appartenenza di un oggetto."""
+    if target.kind == TAB:
+        return int(target.id)
+    if target.kind == ROW:
+        return schema.tab_of(target.obj)
+    if target.parent is not None:
+        return schema.tab_of(target.parent)
+    return tabs.first_id(db)
+
+
+def targets_from_args(db: dict[str, Any], args: Any) -> list[Target]:
+    """Selezione a partire dagli argomenti della CLI.
+
+    I cinque comandi CRUD passano di qui: i selettori sono gli stessi, e un
+    selettore nuovo si aggiunge in un punto solo.
+    """
+    return select_targets(
+        db,
+        args.kind,
+        ids=args.id,
+        match_title=args.match_title,
+        match_type=args.match_type,
+        in_row=args.in_row,
+        in_tab=getattr(args, "in_tab", None),
+    )
 
 
 def find_target(db: dict[str, Any], kind: str, obj_id: int) -> Target:
@@ -174,9 +222,11 @@ def content_panels(db: dict[str, Any], target: Target) -> list[dict[str, Any]]:
     """Pannelli su cui applicare le operazioni di contenuto.
 
     Per un pannello è il pannello stesso (con i suoi eventuali annidati);
-    per una riga sono tutti i pannelli che le appartengono. Le righe sono
-    sempre escluse: sono contenitori, non pannelli.
+    per una riga sono tutti i pannelli che le appartengono; per un tab sono
+    quelli di tutte le sue righe. Righe e tab sono contenitori, non pannelli.
     """
+    if target.kind == TAB:
+        return tabs.panels_of(db, target.id)
     if target.kind == ROW:
         roots = [c for c in row_children(db, target.obj) if isinstance(c, dict)]
     else:
@@ -198,7 +248,10 @@ def set_title(
     if not clean:
         raise ValueError("--title non può essere vuoto.")
     if dedupe:
-        taken = all_titles(db)
+        if target.kind == TAB:
+            taken = {tab.get("title") or "" for tab in tabs.all_tabs(db)}
+        else:
+            taken = all_titles(db)
         current = target.obj.get("title")
         if current in taken:
             taken.remove(current)
@@ -239,8 +292,10 @@ def remove(db: dict[str, Any], target: Target, *, keep_children: bool = False) -
     """Rimuove l'oggetto; ritorna quanti pannelli sono stati eliminati con lui.
 
     Con `keep_children` i pannelli di una riga vengono promossi a top-level
-    invece di essere eliminati.
+    e le righe di un tab passano al primo tab rimasto, invece di sparire.
     """
+    if target.kind == TAB:
+        return tabs.remove(db, target.id, keep_rows=keep_children)
     if target.kind == PANEL:
         container, idx = find_panel_container(db, target.id)
         if container is None:
@@ -357,3 +412,65 @@ def move_row(
         container.insert(0, target.obj)
     else:
         container.append(target.obj)
+
+
+def move_tab(
+    db: dict[str, Any],
+    target: Target,
+    *,
+    before: int | None = None,
+    after: int | None = None,
+    position: str = "bottom",
+) -> None:
+    """Riordina un tab: prima/dopo un altro, oppure in cima/in fondo."""
+    if target.kind != TAB:
+        raise ValueError("--before/--after/--position tra tab vale solo per i tab.")
+    tabs.move(db, target.id, before=before, after=after, position=position)
+
+
+def set_tab(db: dict[str, Any], target: Target, tab_id: int) -> None:
+    """Sposta una riga in un altro tab, in coda al tab di destinazione.
+
+    L'ordine dentro un tab è quello della lista `panels`: cambiare solo
+    `_tab` lascerebbe la riga dove si trovava, che rispetto al nuovo tab è
+    una posizione arbitraria. Per questo il blocco viene staccato e
+    riaccodato dopo l'ultima riga del tab di destinazione.
+    """
+    if target.kind != ROW:
+        raise ValueError("--to-tab vale solo per le righe: un pannello segue la sua riga.")
+    tabs.require(db, tab_id)
+
+    block = _detach_row_block(db, target.obj)
+    tabs.assign(db, [target.obj], tab_id)
+
+    anchor = _last_row_of(db, tab_id)
+    if anchor is None or not isinstance(anchor.get("id"), int):
+        db.setdefault("panels", []).extend(block)
+        return
+    insert_row_after_block(db, anchor["id"], block[0])
+    container, position = find_row_container(db, block[0]["id"])
+    for offset, item in enumerate(block[1:], start=1):
+        container.insert(position + offset, item)
+
+
+def _detach_row_block(db: dict[str, Any], row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Stacca la riga e i pannelli che le appartengono, senza cancellarli."""
+    container, _ = find_row_container(db, row.get("id"))
+    if container is None:
+        raise ValueError(f"Riga {row.get('id')} non trovata.")
+    block = [row] + [c for c in row_children(db, row) if isinstance(c, dict)]
+    positions: list[int] = []
+    for item in block:
+        for position, candidate in enumerate(container):
+            if candidate is item:
+                positions.append(position)
+                break
+    for position in sorted(set(positions), reverse=True):
+        container.pop(position)
+    return block
+
+
+def _last_row_of(db: dict[str, Any], tab_id: int) -> dict[str, Any] | None:
+    """Ultima riga del tab, nell'ordine della dashboard."""
+    rows = [row for row in iter_rows(db) if schema.tab_of(row) == tab_id]
+    return rows[-1] if rows else None
