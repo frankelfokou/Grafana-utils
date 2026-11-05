@@ -101,8 +101,9 @@ grafana-utils update row dashboard.json --match-title "Generale" --title "Genera
 
 Cosa si converte e cosa no:
 
-- **tab**: il formato classico non li ha. Una dashboard v2 con più di un tab non può essere scritta in classico: il comando si ferma con exit code 2 e suggerisce `--to-format v2`.
-- **pannelli fuori riga**: lo schema v2 li vuole sempre dentro un `GridLayout`. In uscita v2 finiscono in una riga senza titolo.
+- **tab**: il formato classico non li ha. Convertendo in classico, i tab vengono **appiattiti in una sola vista**: le righe si susseguono nell'ordine dei tab e il titolo di ogni oggetto di primo livello riceve il nome del tab di provenienza, `<tab>-<titolo>` (`Vista Applicativa-Generale`, `Vista Sistemistica-Infra`). I pannelli fuori riga prendono lo stesso prefisso e finiscono in fondo. Lo scarto viene dichiarato nel report;
+- **variabili**: mai toccate. Nessun comando legge o scrive `templating` / `variables`; una conversione le ri-esprime soltanto, e il giro completo tra formati le restituisce identiche. `extract` le eredita dalla dashboard di partenza, perché i pannelli estratti citano `$variabile`;
+- **posizioni**: in v2 ogni riga ha coordinate proprie che partono da `y = 0`. In classico lo spazio è unico, quindi le righe vengono impilate in colonna; una dashboard già classica non viene toccata;
 - **`uid`, `id`, `version`**: non esistono nello schema v2 e in uscita vengono rimossi, con la perdita dichiarata nel report.
 - **alert legacy**: non hanno equivalente v2. La conversione si ferma, a meno di `--drop-alerts`.
 - **elemento in due posizioni**: il classico non può rappresentare lo stesso pannello in due punti. Il tool si ferma e nomina l'elemento.
@@ -396,12 +397,14 @@ Copia l'intera dashboard in una **nuova**, senza legami con l'originale. È l'op
 | `--keep-library` | flag | off | opzionale; indipendente | Mantieni i riferimenti ai pannelli di libreria |
 | `--keep-alerts` | flag | off | opzionale; indipendente | Mantieni le regole di alert legacy |
 | `--strip-links` | flag | off | opzionale; indipendente | Rimuovi anche i link della dashboard |
+| `--keep-tab N` | intero | tutti i tab | opzionale; indipendente | Duplica solo il tab `N`, scartando gli altri |
 
 Cosa cambia nella copia:
 
 - **uid nuovo**, `id` nullo e `version` 1: Grafana crea una dashboard invece di aggiornare l'originale;
 - **titolo unico**: la sorgente esiste ancora, quindi il suo titolo non è libero;
-- **id dei pannelli rinumerati** da 1, così nessun numero della sorgente sopravvive;
+- **id rinumerati** dal 1: prima i pannelli (contigui, così in v2 i nomi sono
+  `panel-1`, `panel-2`, ...), poi le righe. Nessun numero della sorgente sopravvive;
 - **pannelli di libreria e alert staccati**: continuerebbero a puntare a oggetti e destinatari dell'originale;
 - **link conservati**: fanno parte del contenuto, si rimuovono solo con `--strip-links`.
 
@@ -412,6 +415,16 @@ grafana-utils fork dashboard.json --strip-links --keep-alerts
 ```
 
 Con `--to-format v2` la copia non riceve uid, `id` né `version`: lo schema v2 non li prevede.
+
+Con `--to-format classic` i tab vengono appiattiti (vedi [Formati](#formati-classico-e-v2)). Con `--keep-tab N` si duplica un solo tab e i titoli restano intatti:
+
+```bash
+# copia integrale, una vista sola con i titoli prefissati
+grafana-utils fork dashboard-v2.json --to-format classic -o vista.json
+
+# copia del solo tab 2, titoli originali
+grafana-utils fork dashboard-v2.json --keep-tab 2 --to-format classic -o vista.json
+```
 
 ## `layout`, `validate`, `lint`: dashboard
 

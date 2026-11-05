@@ -201,15 +201,58 @@ Un adattatore per elemento, puro: dizionari in ingresso, dizionari in uscita, ne
 | --- | --- | --- |
 | `dashboard.py` | `time`, `timezone`, `refresh`, `timepicker`, `annotations.list`, `links`, `tags` | `timeSettings`, `annotations[]`, `links`, `tags`, più `cursorSync`/`preload`/`liveNow` |
 | `variables.py` | `templating.list[].type` | `variables[].kind` + `spec` |
+
+### Variabili: garanzia di immutabilità
+
+Le variabili sono contesto condiviso da tutte le query: cambiarle cambierebbe il senso di ogni pannello. La regola è quindi rigida: **nessun comando legge o scrive `templating` / `variables`**. L'unico modulo che le tocca è `formats/variables.py`, e solo quando cambia il formato.
+
+| Percorso | Esito |
+| --- | --- |
+| classico → classico (`update`, `delete`, `move`, `layout`, `fork`) | blocco identico, byte per byte |
+| v2 → v2 (`update`, `delete tab`, `fork`) | idem |
+| v2 → classico → v2 | identiche al documento di partenza |
+| classico → v2 → classico | identiche al documento di partenza |
+| `extract` | le **eredita** dalla sorgente: è una scelta, perché i pannelli estratti citano `$variabile` |
+| `update --datasource` | tocca i pannelli, mai la `datasource` dichiarata nelle variabili |
+
+La mappa `kind` ↔ `type` è in `KIND_TO_TYPE`, con l'inverso generato: `DatasourceVariable` ↔ `datasource`, `QueryVariable` ↔ `query`, e così via. Un `kind` sconosciuto viene conservato e la cosa dichiarata nel report (`partial`).
+
+Una regola sola evita che il giro di formato cambi la forma di una variabile: nel classico la query di una variabile è una stringa **oppure** un oggetto `{query, refId}`. In uscita v2 diventa `spec`; in lettura un `spec` con la sola chiave `query` torna a essere la stringa. Altrimenti `label_values(up)` diventerebbe `{query: "label_values(up)"}` al primo giro.
+
+Gli **enum** delle variabili hanno tipi diversi nei due formati e vanno tradotti (`ENUMS` in `formats/variables.py`):
+
+| Campo | Classico | v2 |
+| --- | --- | --- |
+| `hide` | `0` / `1` / `2` | `dontHide` / `hideLabel` / `hideVariable` |
+| `refresh` | `0` / `1` / `2` | `never` / `onDashboardLoad` / `onTimeRangeChanged` |
+| `sort` | `0`…`8` | `disabled`, `alphabeticalAsc`, … `naturalDesc` |
+
+Non è una questione estetica: Grafana legge `hide` confrontandolo con `0`, quindi un file classico con `"hide": "dontHide"` finisce per nascondere l'etichetta del selettore. La conversione traduce, il round-trip restituisce la forma originale.
+
+La garanzia è coperta da `tests/test_variables.py`: comandi classici e v2, due giri completi e i due tipi di query. Se qualcuno tocca `templating` per errore, i test falliscono.
 | `panel.py` | `type`, `fieldConfig`, `options`, `transparent` | `vizConfig.group`, `vizConfig.spec` |
 | `queries.py` | `targets[]`, `transformations[]`, `queryOptions` | `data.spec.queries[].spec.query`, `data.spec.transformations` |
 | `layout.py` | righe e `gridPos` | `layout` (tab → righe → griglia) ed `elements` |
+| `flatten.py` | una vista sola: titoli prefissati, righe impilate | — |
 
 `layout.read_tree` restituisce tab, righe e posizioni anche quando una riga è **vuota**: lo schema v2 sa rappresentarla, quindi scartarla sarebbe una perdita silenziosa.
 
+### Appiattimento dei tab
+
+Il classico non ha tab. Invece di rifiutare la conversione, `flatten.flatten` li unisce in una vista sola:
+
+| Passo | Effetto |
+| --- | --- |
+| prefisso | ogni oggetto di primo livello (righe e pannelli fuori riga) diventa `<tab>-<titolo>`; con titolo vuoto resta il nome del tab |
+| ordine | le righe si dispongono per tab, nell'ordine dei tab |
+| orfani | i pannelli fuori riga vanno in fondo, prefissati con il primo tab (dichiarato nel report) |
+| impilamento | `y` progressivo: intestazione di riga a `y`, figli da `y + 1` |
+
+L'impilamento serve anche a una dashboard a **un solo** tab letta da v2: `formats._build_panels` marca le righe con `_relative_grid` (chiave interna, rimossa in uscita) e `flatten` riposiziona solo quando quel marcatore c'è. Una dashboard già classica non viene toccata: le sue righe conservano `gridPos`.
+
 ### Fedeltà dichiarata
 
-Ogni volta che una conversione non è esatta, `formats.Report` raccoglie la perdita e il comando la stampa (in ingresso subito dopo `load`, in uscita dentro `persist`).
+Ogni volta che una conversione non è esatta, `formats.Report` raccoglie la perdita e il comando la stampa (in ingresso subito dopo `load`, in uscita dentro `persist`). I gradi sono `esatta`, `con perdita`, `parziale` e `nota`: l'ultimo serve a dire qualcosa che non è una perdita ma va saputo (es. un file classico scritto partendo da v2 non ha `uid`).
 
 | Situazione | Direzione | Esito |
 | --- | --- | --- |
@@ -218,7 +261,8 @@ Ogni volta che una conversione non è esatta, `formats.Report` raccoglie la perd
 | `uid`, `id`, `version` | → v2 | rimossi, dichiarati nel report |
 | `vizConfig.version` | → v2 | rigenerato con la versione supportata |
 | `target` di un'annotazione | → v2 | appiattito nel corpo della query, dichiarato |
-| più di un tab | → classico | **errore**, exit 2, nessun file |
+| identità assente in uscita classica | → classico | `[nota]`: Grafana la assegnerà all'import |
+| più di un tab | → classico | appiattimento: titoli prefissati `<tab>-<titolo>`, righe impilate |
 | regola di alert legacy | → v2 | **errore**, salvo `--drop-alerts` |
 | stesso elemento in due posizioni | → classico | **errore** |
 
@@ -626,12 +670,16 @@ grafana-utils fork dashboard-v2.json --to-format v2 -o copia-v2.json
 | `--keep-library` | flag | off | opzionale |
 | `--keep-alerts` | flag | off | opzionale |
 | `--strip-links` | flag | off | opzionale |
+| `--keep-tab N` | int | tutti i tab | opzionale |
 
-Tre passaggi, in quest'ordine, dentro `modify`:
+Quattro passaggi, in quest'ordine, dentro `modify`:
 
-1. `identity.detach_bindings`: toglie `libraryPanel`, `alert`/`alertId` e, se richiesto, `links`;
-2. `identity.renumber_dashboard`: riassegna gli id da 1 in ordine di documento;
-3. `identity.seal_new_dashboard`: uid nuovo, `id` nullo, `version` 1, titolo unico.
+1. `_keep_only_tab` (solo con `--keep-tab`): scarta gli altri tab con `tabs.remove`, dichiarando quanti pannelli spariscono. È la via per ottenere una copia classica da una dashboard con più tab, che il formato classico non sa contenere;
+2. `identity.detach_bindings`: toglie `libraryPanel`, `alert`/`alertId` e, se richiesto, `links`;
+3. `identity.renumber_dashboard`: riassegna gli id da 1 — **prima i pannelli** (contigui, così in v2 i nomi sono `panel-1`, `panel-2`, ...), poi le righe;
+4. `identity.seal_new_dashboard`: uid nuovo, `id` nullo, `version` 1, titolo unico.
+
+Il vincolo "uscita classica a un solo tab" non esiste più: con più tab la conversione li appiattisce (vedi `formats/flatten.py`). `--keep-tab` resta utile per evitare i prefissi sui titoli.
 
 L'ordine conta: i nomi degli elementi v2 (`_element`) vengono rimossi prima della sigillatura, così `panel-<id>` segue i nuovi id invece di ricordare quelli della sorgente.
 

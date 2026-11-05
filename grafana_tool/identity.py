@@ -25,12 +25,7 @@ import secrets
 import string
 from typing import Any, Iterable, NamedTuple
 
-from grafana_tool.model import (
-    dashboard_roots,
-    iter_all_panels,
-    iter_panels,
-    renumber_ids,
-)
+from grafana_tool.model import iter_all_panels, iter_panel_slots, iter_panels, iter_rows
 
 # Grafana usa uid alfanumerici di 9 caratteri; lo stesso alfabeto evita uid
 # che il server dovrebbe riscrivere.
@@ -211,14 +206,23 @@ def seal_new_dashboard(
 
 
 def renumber_dashboard(db: dict[str, Any]) -> int:
-    """Rinumera gli id da 1, nell'ordine in cui compaiono nel file.
+    """Rinumera gli id partendo da 1: prima i pannelli, poi le righe.
+
+    L'ordine non è quello del documento ma quello di importanza: i pannelli
+    sono gli oggetti che l'utente seleziona con `--id` e che in v2 diventano
+    nomi (`panel-1`, `panel-2`, ...), quindi occupano la numerazione bassa e
+    contigua. Le righe seguono.
 
     Serve a un fork: una dashboard nuova non deve portarsi dietro la
     numerazione della precedente. Ritorna quanti oggetti hanno un id.
     """
     next_id = 1
-    for root in dashboard_roots(db):
-        next_id = renumber_ids(root, next_id)
+    for _, _, panel, _ in iter_panel_slots(db):
+        panel["id"] = next_id
+        next_id += 1
+    for row in iter_rows(db):
+        row["id"] = next_id
+        next_id += 1
     return next_id - 1
 
 

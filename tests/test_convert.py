@@ -228,17 +228,37 @@ class GuardTest(unittest.TestCase):
         del raw["elements"]["panel-3"]
         return raw
 
-    def test_due_tab_in_uscita_classica_sono_un_errore(self) -> None:
+    def test_due_tab_vengono_appiattiti_in_una_vista(self) -> None:
         db = canonical_v2()
-        with self.assertRaises(InputError) as ctx:
-            formats.render(db, schema.CLASSIC)
-        self.assertIn("--to-format v2", str(ctx.exception))
+        out, report = formats.render(db, schema.CLASSIC)
+        righe = [p for p in out["panels"] if p.get("type") == "row"]
+        self.assertEqual(
+            [r["title"] for r in righe],
+            ["Applicativa-Generale", "Sistemistica-Infra"],
+        )
+        self.assertTrue(any("prefisso" in message for _, message in report.entries))
 
     def test_un_tab_in_uscita_classica_e_ammesso(self) -> None:
         db = formats.load(self._v2_condue_tab()).db
         out, _ = formats.render(db, schema.CLASSIC)
         contenuti = [p for p in out["panels"] if p.get("type") != "row"]
         self.assertEqual(len(contenuti), 2)
+
+    def test_classico_senza_identita_lo_dichiara(self) -> None:
+        """Da v2 il file classico esce senza uid/id/version: va detto."""
+        db = formats.load(self._v2_condue_tab()).db
+        _, report = formats.render(db, schema.CLASSIC)
+        self.assertTrue(
+            any("uid" in message and "Grafana" in message
+                for _, message in report.entries)
+        )
+
+    def test_classico_con_identita_non_dice_nulla(self) -> None:
+        db = formats.load(self._v2_condue_tab()).db
+        db.update({"uid": "abc", "id": 3, "version": 5})
+        _, report = formats.render(db, schema.CLASSIC)
+        messaggi = [message for _, message in report.entries]
+        self.assertFalse(any("uid" in message for message in messaggi))
 
     def test_elemento_in_due_posizioni_e_un_errore(self) -> None:
         raw = v2_fixture()
@@ -309,15 +329,16 @@ class CLIConversionTest(CLITestCase):
         self.assertIn("panels", scritto)
         self.assertNotIn("elements", scritto)
 
-    def test_due_tab_con_to_format_classico_esce_con_2(self) -> None:
+    def test_due_tab_in_classico_diventano_una_vista(self) -> None:
         out = str(self.tmp / "classico.json")
-        code, _, err = self.run_cli(
+        code, stdout, err = self.run_cli(
             "update", "panel", "--id", "1", "--title", "X",
             str(V2_FIXTURE), "-o", out, "--to-format", "classic",
         )
-        self.assertEqual(code, 2)
-        self.assertIn("--to-format v2", err)
-        self.assertFalse(Path(out).exists())
+        self.assertEqual(code, 0, stdout + err)
+        scritto = self.read_json(out)
+        righe = [p["title"] for p in scritto["panels"] if p.get("type") == "row"]
+        self.assertEqual(righe, ["Applicativa-Generale", "Sistemistica-Infra"])
 
     def test_file_di_input_non_viene_modificato(self) -> None:
         prima = V2_FIXTURE.read_text(encoding="utf-8")

@@ -26,7 +26,7 @@ from typing import Any
 from grafana_tool import model, schema
 from grafana_tool.io import InputError
 
-from . import dashboard, layout, panel, queries, variables
+from . import dashboard, flatten as flatten_module, layout, panel, queries, variables
 
 __all__ = [
     "Report",
@@ -37,7 +37,9 @@ __all__ = [
     "EXACT",
     "LOSSY",
     "PARTIAL",
+    "INFO",
     "dashboard",
+    "flatten",
     "layout",
     "panel",
     "queries",
@@ -48,11 +50,13 @@ __all__ = [
 EXACT = "exact"
 LOSSY = "lossy"
 PARTIAL = "partial"
+INFO = "info"
 
 FIDELITY_LABEL = {
     EXACT: "esatta",
     LOSSY: "con perdita",
     PARTIAL: "parziale",
+    INFO: "nota",
 }
 
 
@@ -169,6 +173,9 @@ def _build_panels(
             "collapsed": row_spec.collapsed,
             "panels": [],
             "_tab": row_spec.tab_index,
+            # In v2 ogni riga ha una griglia propria che parte da y = 0: le
+            # posizioni dei figli sono relative alla riga, non alla dashboard.
+            "_relative_grid": True,
         }
         root.append(row)
         # Una riga espansa tiene i figli come fratelli top-level, come fa
@@ -217,16 +224,41 @@ def render(
 
 
 def _render_classic(db: dict[str, Any]) -> tuple[dict[str, Any], Report]:
-    """Uscita classica: il canonico ripulito dai metadati interni."""
+    """Uscita classica: un solo tab, titoli prefissati e righe impilate."""
     report = Report()
-    tabs = schema.canonical_tabs(db)
-    if len(tabs) > 1:
-        titles = ", ".join(f"'{tab.get('title') or ''}'" for tab in tabs)
-        raise InputError(
-            f"l'uscita classica non rappresenta più di un tab "
-            f"({len(tabs)} trovati: {titles}). Usa --to-format v2."
-        )
     out = copy.deepcopy(db)
+
+    result = flatten_module.flatten(out)
+    if result.renames:
+        report.add(
+            LOSSY,
+            f"{len(result.renames)} oggetti di primo livello hanno ricevuto il "
+            "prefisso del tab di provenienza (<tab>-<titolo>)",
+        )
+    if result.moved_orphans:
+        report.add(
+            LOSSY,
+            f"{result.moved_orphans} pannelli fuori riga spostati in fondo alla "
+            "vista unica",
+        )
+    if result.restacked:
+        report.add(
+            INFO,
+            "righe impilate in colonna: lo schema v2 dà a ogni riga coordinate "
+            "proprie, il classico ne ha una sola",
+        )
+
+    missing = [key for key in dashboard.V2_ABSENT_KEYS if key not in out]
+    if missing:
+        # Tipico di una dashboard letta da v2 e riscritta in classico: lo
+        # schema v2 non ha identità, quindi il file ne è privo. Grafana la
+        # assegna all'import, ma l'utente deve saperlo.
+        report.add(
+            INFO,
+            "dashboard senza " + ", ".join(missing)
+            + ": l'identità sarà assegnata da Grafana all'import",
+        )
+
     schema.strip_internal(out)
     return out, report
 

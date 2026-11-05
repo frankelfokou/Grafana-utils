@@ -172,6 +172,91 @@ class ForkFormatsTest(CLITestCase):
         self.assertTrue(scritto["uid"])
         self.assertIsNone(scritto["id"])
 
+    def test_uid_rifiutato_con_uscita_v2(self) -> None:
+        out = self.tmp / "out.json"
+        code, _, err = self.run_cli(
+            "fork", str(V2_FIXTURE), "-o", out, "--uid", "abc123"
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("--uid non ha effetto con l'uscita v2", err)
+        self.assertFalse(out.exists())
+
+
+class ForkKeepTabTest(CLITestCase):
+    """Un solo comando per duplicare una dashboard a più tab come classico."""
+
+    def test_da_due_tab_a_classico(self) -> None:
+        out = self.tmp / "out.json"
+        code, stdout, err = self.run_cli(
+            "fork", str(V2_FIXTURE), "--keep-tab", "2", "--to-format", "classic",
+            "-o", out,
+        )
+        self.assertEqual(code, 0, stdout + err)
+        scritto = self.read_json(out)
+        self.assertIn("panels", scritto)
+        self.assertNotIn("elements", scritto)
+        self.assertTrue(scritto["uid"])
+        self.assertIsNone(scritto["id"])
+        self.assertEqual(scritto["version"], 1)
+
+    def test_tiene_solo_il_tab_indicato(self) -> None:
+        out = self.tmp / "out.json"
+        self.run_cli(
+            "fork", str(V2_FIXTURE), "--keep-tab", "2", "--to-format", "classic",
+            "-o", out,
+        )
+        scritto = self.read_json(out)
+        righe = [p for p in model.iter_rows(scritto)]
+        self.assertEqual([r["title"] for r in righe], ["Infra"])
+        self.assertEqual(
+            [p["id"] for _, _, p, _ in model.iter_panel_slots(scritto)],
+            [1],
+        )
+
+    def test_scarto_dichiarato(self) -> None:
+        out = self.tmp / "out.json"
+        code, stdout, _ = self.run_cli(
+            "fork", str(V2_FIXTURE), "--keep-tab", "2", "-o", out
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("scartati gli altri con 2 pannelli", stdout)
+
+    def test_uscita_v2_con_un_solo_tab(self) -> None:
+        out = self.tmp / "out.json"
+        code, stdout, _ = self.run_cli(
+            "fork", str(V2_FIXTURE), "--keep-tab", "1", "-o", out
+        )
+        self.assertEqual(code, 0, stdout)
+        scritto = self.read_json(out)
+        self.assertEqual(
+            [t["spec"]["title"] for t in scritto["layout"]["spec"]["tabs"]],
+            ["Applicativa"],
+        )
+        self.assertEqual(sorted(scritto["elements"]), ["panel-1", "panel-2"])
+
+    def test_tab_inesistente(self) -> None:
+        out = self.tmp / "out.json"
+        code, _, err = self.run_cli(
+            "fork", str(V2_FIXTURE), "--keep-tab", "99", "-o", out
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("Tab 99 non trovato", err)
+        self.assertIn("Applicativa", err)
+        self.assertFalse(out.exists())
+
+    def test_conserva_variabili_e_tempo(self) -> None:
+        out = self.tmp / "out.json"
+        self.run_cli(
+            "fork", str(V2_FIXTURE), "--keep-tab", "2", "--to-format", "classic",
+            "-o", out,
+        )
+        scritto = self.read_json(out)
+        self.assertEqual(
+            [v["name"] for v in scritto["templating"]["list"]],
+            ["env", "cluster_gen"],
+        )
+        self.assertEqual(scritto["time"], {"from": "now-3h", "to": "now"})
+
 
 if __name__ == "__main__":
     unittest.main()

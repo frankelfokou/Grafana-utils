@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import argparse
 
-from grafana_tool import identity, schema
+from grafana_tool import identity, schema, tabs
 from grafana_tool.cli_common import add_title_option
 from grafana_tool.command_base import WriteCommand
 from grafana_tool.identity import detach_bindings, renumber_dashboard, seal_new_dashboard
@@ -58,6 +58,13 @@ class ForkCommand(WriteCommand):
             "--strip-links", dest="strip_links", action="store_true",
             help="Rimuovi anche i link della dashboard (default: conservati)",
         )
+        parser.add_argument(
+            "--keep-tab", dest="keep_tab", type=int, metavar="N",
+            help=(
+                "Duplica solo il tab N e scarta gli altri. Senza questo flag una "
+                "copia classica appiattisce tutti i tab e prefissa i titoli"
+            ),
+        )
 
     def _inventory(self, args: argparse.Namespace) -> tuple[set[str], set[str]]:
         """uid e titoli delle dashboard già presenti in Grafana, se indicati."""
@@ -77,8 +84,33 @@ class ForkCommand(WriteCommand):
         identity.extend_text(taken_titles, db.get("title"))
         return taken_uids, taken_titles
 
+    def _keep_only_tab(self, db: dict, tab_id: int) -> tuple[dict, int]:
+        """Scarta tutti i tab tranne quello indicato.
+
+        L'eliminazione è dichiarata: il comando stampa quanti tab e quanti
+        pannelli sono stati scartati. In uscita classica è l'alternativa
+        all'appiattimento: si tiene un tab solo, quindi i titoli restano
+        quelli originali, senza prefisso.
+        """
+        kept = tabs.require(db, tab_id)
+        others = [tab for tab in tabs.all_tabs(db) if tab.get("id") != tab_id]
+        removed_panels = 0
+        for tab in others:
+            removed_panels += tabs.remove(db, tab["id"])
+        return kept, removed_panels
+
     def modify(self, db: dict, args: argparse.Namespace) -> dict:
         target = getattr(args, "target_format", schema.CLASSIC)
+        if target == schema.V2 and args.uid is not None:
+            raise ValueError(
+                "--uid non ha effetto con l'uscita v2: lo schema non prevede "
+                "l'uid della dashboard. Usa --to-format classic."
+            )
+
+        kept_tab = None
+        discarded = 0
+        if args.keep_tab is not None:
+            kept_tab, discarded = self._keep_only_tab(db, args.keep_tab)
 
         counts = detach_bindings(
             db,
@@ -103,6 +135,11 @@ class ForkCommand(WriteCommand):
         )
 
         print(f"Dashboard duplicata: {total} oggetti rinumerati da 1.")
+        if kept_tab is not None:
+            print(
+                f"  Solo il tab '{kept_tab.get('title') or ''}': "
+                f"scartati gli altri con {discarded} pannelli."
+            )
         if counts["library"]:
             print(f"  Riferimenti a pannelli di libreria staccati: {counts['library']}.")
         if counts["alerts"]:

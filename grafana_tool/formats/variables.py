@@ -30,6 +30,42 @@ TYPE_TO_KIND = {value: key for key, value in KIND_TO_TYPE.items()}
 # Versione dello schema della DataQuery delle variabili.
 DATA_QUERY_VERSION = "v0"
 
+# Enum delle variabili: il JSON classico usa numeri, lo schema v2 stringhe.
+# Scriverne una forma nell'altro formato non è un dettaglio estetico: Grafana
+# legge `hide` come numero, quindi `"dontHide"` non vale 0 e l'etichetta del
+# selettore sparisce.
+HIDE = {0: "dontHide", 1: "hideLabel", 2: "hideVariable"}
+REFRESH = {0: "never", 1: "onDashboardLoad", 2: "onTimeRangeChanged"}
+SORT = {
+    0: "disabled",
+    1: "alphabeticalAsc",
+    2: "alphabeticalDesc",
+    3: "numericalAsc",
+    4: "numericalDesc",
+    5: "alphabeticalCaseInsensitiveAsc",
+    6: "alphabeticalCaseInsensitiveDesc",
+    7: "naturalAsc",
+    8: "naturalDesc",
+}
+ENUMS = {"hide": HIDE, "refresh": REFRESH, "sort": SORT}
+
+
+def to_classic_enums(spec: dict[str, Any]) -> None:
+    """Porta gli enum testuali sulla forma numerica del classico."""
+    for key, mapping in ENUMS.items():
+        by_name = {name: number for number, name in mapping.items()}
+        value = spec.get(key)
+        if isinstance(value, str) and value in by_name:
+            spec[key] = by_name[value]
+
+
+def to_v2_enums(spec: dict[str, Any]) -> None:
+    """Porta gli enum numerici sulla forma testuale di v2."""
+    for key, mapping in ENUMS.items():
+        value = spec.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value in mapping:
+            spec[key] = mapping[value]
+
 
 def read_into(v2: dict[str, Any], db: dict[str, Any], report: Any) -> None:
     """`variables[]` v2 → `templating.list[]` classico."""
@@ -78,6 +114,7 @@ def _read_variable(variable: dict[str, Any], report: Any) -> dict[str, Any]:
     elif kind == "QueryVariable":
         _read_query_variable(spec, name, report)
 
+    to_classic_enums(spec)
     spec["type"] = vtype
     return spec
 
@@ -97,7 +134,14 @@ def _read_query_variable(
         }
     body = query.get("spec")
     if isinstance(body, dict):
-        spec["query"] = copy.deepcopy(body)
+        # Il classico accetta due forme: la stringa e l'oggetto {query, refId}.
+        # Una corpo con la sola chiave `query` viene dalla stringa, quindi si
+        # torna alla stringa: altrimenti un giro classico→v2→classico
+        # cambierebbe la forma della variabile senza cambiarne il senso.
+        if set(body) == {"query"}:
+            spec["query"] = body["query"]
+        else:
+            spec["query"] = copy.deepcopy(body)
     else:
         report.add(
             "partial",
@@ -124,6 +168,7 @@ def _write_variable(variable: dict[str, Any], report: Any) -> dict[str, Any]:
     elif vtype == "query":
         _write_query_variable(spec, variable.get("name", "?"), report)
 
+    to_v2_enums(spec)
     return {"kind": kind, "spec": spec}
 
 

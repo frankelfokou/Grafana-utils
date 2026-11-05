@@ -36,7 +36,7 @@ IMPLICIT_TAB_ID = 1
 
 # Chiavi di servizio del modello canonico. Non si usa un prefisso generico
 # perché il JSON di Grafana contiene già chiavi come `__systemRef`.
-INTERNAL_KEYS = frozenset({"_tabs", "_tab", "_element", "_extras"})
+INTERNAL_KEYS = frozenset({"_tabs", "_tab", "_element", "_extras", "_relative_grid"})
 
 
 def detect(db: dict[str, Any]) -> str:
