@@ -1,4 +1,4 @@
-"""variables: conversione delle variabili (templating).
+"""variables: conversione e normalizzazione delle variabili (templating).
 
 Classico: `templating.list[]` con `type` testuale (`query`, `datasource`,
 `custom`, ...). Schema v2: `variables[]` con `kind` in CamelCase
@@ -7,11 +7,25 @@ Classico: `templating.list[]` con `type` testuale (`query`, `datasource`,
 La mappa tra i due vocabolari è esplicita: se compare un `kind` che non
 conosciamo il campo viene conservato e la perdita dichiarata, invece di
 essere ignorata.
+
+Due normalizzazioni si applicano a ogni dashboard prodotta (`normalize`):
+
+  - **visibilità**: ogni variabile compare in alto, anche se nella dashboard
+    di origine era nascosta;
+  - **uso nelle query**: un valore fisso il cui nome coincide con una
+    variabile viene sostituito dal riferimento (`cluster_gen="3"` diventa
+    `cluster_gen="$cluster_gen"`).
+
+Sono le uniche due cose che questo modulo cambia di sua iniziativa: valori,
+definizioni e tipi restano quelli della dashboard di partenza.
 """
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
+
+from grafana_tool import model
 
 KIND_TO_TYPE = {
     "DatasourceVariable": "datasource",
@@ -65,6 +79,111 @@ def to_v2_enums(spec: dict[str, Any]) -> None:
         value = spec.get(key)
         if isinstance(value, int) and not isinstance(value, bool) and value in mapping:
             spec[key] = mapping[value]
+
+
+# --- normalizzazioni di uscita ---------------------------------------------
+
+# `hide` che lascia il selettore e la sua etichetta in alto.
+VISIBLE_HIDE = (0, "dontHide")
+
+# Tipi di variabile il cui valore può stare dentro un matcher di label.
+# Restano fuori `datasource` (si usa come `${env}`, non come valore di label)
+# e `adhoc` (è un insieme di filtri, non un valore).
+SUBSTITUTABLE_TYPES = ("query", "custom", "interval", "textbox", "constant", "switch")
+
+# `label=~"valore"` e varianti. Esclude i valori già riferiti a una variabile
+# (contengono `$`) e quelli vuoti.
+LABEL_MATCHER = re.compile(
+    r'(?P<label>\b[A-Za-z_][A-Za-z0-9_]*)\s*'
+    r'(?P<op>=~|!~|!=|=)\s*'
+    r'"(?P<value>[^"$][^"]*)"'
+)
+
+
+def normalize(
+    db: dict[str, Any],
+    report: Any,
+    *,
+    show_all: bool = True,
+    substitute: bool = True,
+) -> None:
+    """Applica le due regole sulle variabili al documento di uscita."""
+    variabili = [v for v in _variable_list(db) if isinstance(v, dict)]
+
+    if show_all:
+        rese = [v.get("name") or "?" for v in variabili if _make_visible(v)]
+        if rese:
+            report.add(
+                "info",
+                f"{len(rese)} variabili rese visibili in alto: {', '.join(rese)}",
+            )
+
+    if substitute:
+        nomi = _substitutable_names(variabili)
+        if nomi:
+            sostituzioni = _substitute_values(db, nomi)
+            if sostituzioni:
+                dettaglio = ", ".join(
+                    f"${nome} x{conteggio}"
+                    for nome, conteggio in sorted(sostituzioni.items())
+                )
+                report.add(
+                    "info",
+                    f"valori fissi sostituiti dalla variabile: {dettaglio}",
+                )
+
+
+def _make_visible(variable: dict[str, Any]) -> bool:
+    """Rende visibile la variabile; vero se ha cambiato qualcosa."""
+    if variable.get("hide") in VISIBLE_HIDE:
+        return False
+    variable["hide"] = 0
+    return True
+
+
+def _substitutable_names(variables: list[dict[str, Any]]) -> set[str]:
+    """Nomi delle variabili il cui valore può comparire in un matcher."""
+    nomi: set[str] = set()
+    for variable in variables:
+        name = variable.get("name")
+        if isinstance(name, str) and name and variable.get("type") in SUBSTITUTABLE_TYPES:
+            nomi.add(name)
+    return nomi
+
+
+def _substitute_values(db: dict[str, Any], names: set[str]) -> dict[str, int]:
+    """Sostituisce nei pannelli i valori fissi che corrispondono a una variabile."""
+    conteggi: dict[str, int] = {}
+    for _, _, panel, _ in model.iter_panel_slots(db):
+        for target in panel.get("targets") or []:
+            if not isinstance(target, dict):
+                continue
+            expr = target.get("expr")
+            if not isinstance(expr, str):
+                continue
+            nuovo, trovate = _rewrite_expression(expr, names)
+            if not trovate:
+                continue
+            target["expr"] = nuovo
+            for nome, quante in trovate.items():
+                conteggi[nome] = conteggi.get(nome, 0) + quante
+    return conteggi
+
+
+def _rewrite_expression(
+    expr: str, names: set[str]
+) -> tuple[str, dict[str, int]]:
+    """Riscrive `<nome>="valore"` in `<nome>="$<nome>"` per i nomi noti."""
+    trovate: dict[str, int] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        label = match.group("label")
+        if label not in names:
+            return match.group(0)
+        trovate[label] = trovate.get(label, 0) + 1
+        return f'{label}{match.group("op")}"${label}"'
+
+    return LABEL_MATCHER.sub(replace, expr), trovate
 
 
 def read_into(v2: dict[str, Any], db: dict[str, Any], report: Any) -> None:

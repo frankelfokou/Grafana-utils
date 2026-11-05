@@ -13,7 +13,7 @@ from pathlib import Path
 from grafana_tool import formats, model, schema
 from grafana_tool.io import InputError
 
-from support import CLITestCase, sample_dashboard
+from tests.support import CLITestCase, sample_dashboard
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 V2_FIXTURE = FIXTURES / "dashboard-v2.json"
@@ -49,7 +49,12 @@ def projection(db: dict) -> dict:
         "tabs": [t["title"] for t in schema.canonical_tabs(db)],
         "rows": righe,
         "panels": sorted(contenuti, key=lambda c: (c[0] is None, c[0])),
-        "variables": (db.get("templating") or {}).get("list"),
+        # `hide` è normalizzato in uscita (variabili sempre visibili): il resto
+        # delle variabili non cambia, quindi si confronta quello.
+        "variables": [
+            {k: v for k, v in variable.items() if k != "hide"}
+            for variable in (db.get("templating") or {}).get("list", [])
+        ],
         "time": db.get("time"),
         "timezone": db.get("timezone"),
         "refresh": db.get("refresh") or "",

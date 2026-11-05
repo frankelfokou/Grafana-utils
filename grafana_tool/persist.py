@@ -64,6 +64,8 @@ def save_and_validate(
         db,
         getattr(args, "target_format", None) or resolve_target_format(args, loaded),
         drop_alerts=bool(getattr(args, "drop_alerts", False)),
+        keep_variable_visibility=bool(getattr(args, "keep_variable_visibility", False)),
+        keep_literal_values=bool(getattr(args, "keep_literal_values", False)),
     )
     io.save_dashboard(document, out, dry_run=dry_run)
     _print_report(report)

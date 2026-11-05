@@ -7,7 +7,7 @@ from pathlib import Path
 
 from grafana_tool import model
 
-from support import CLITestCase, panel, row, sample_dashboard
+from tests.support import CLITestCase, panel, row, sample_dashboard
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 V2_FIXTURE = FIXTURES / "dashboard-v2.json"

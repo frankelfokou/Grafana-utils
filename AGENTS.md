@@ -120,7 +120,7 @@ flowchart LR
 | `find_panel_container(db, panel_id)` | `(lista_contenitrice, indice)` del pannello, ovunque sia annidato. `(None, -1)` se assente. |
 | `get_max_id(db)` | Massimo `id` intero tra tutti i pannelli, righe comprese; `0` se non ce ne sono. |
 | `max_y(db)` | Massimo `gridPos.y + gridPos.h` tra tutti i pannelli, annidati compresi. |
-| `title_regex(pattern)` | `re.compile(pattern, re.IGNORECASE)`: punto unico per l'identificazione per nome. |
+| `title_regex(pattern)` | `re.compile(pattern, re.IGNORECASE)`: punto unico per l'identificazione per nome. Una regex non valida diventa `ValueError`, così la CLI risponde con un errore e un log invece di un traceback. |
 | `renumber_ids(obj, base_id)` | Assegna `obj["id"]`, poi id consecutivi ai figli e ai nipoti. Ritorna il primo id libero. |
 | `insert_row_after_block(db, row_id, new_row)` | Inserisce `new_row` dopo il blocco della riga (per una riga espansa, dopo i fratelli). |
 | `remove_row_block(db, row_id)` | Rimuove la riga e i suoi pannelli; ritorna quanti pannelli di contenuto sono stati rimossi. |
@@ -202,16 +202,25 @@ Un adattatore per elemento, puro: dizionari in ingresso, dizionari in uscita, ne
 | `dashboard.py` | `time`, `timezone`, `refresh`, `timepicker`, `annotations.list`, `links`, `tags` | `timeSettings`, `annotations[]`, `links`, `tags`, più `cursorSync`/`preload`/`liveNow` |
 | `variables.py` | `templating.list[].type` | `variables[].kind` + `spec` |
 
-### Variabili: garanzia di immutabilità
+### Variabili: cosa non cambia e cosa viene normalizzato
 
-Le variabili sono contesto condiviso da tutte le query: cambiarle cambierebbe il senso di ogni pannello. La regola è quindi rigida: **nessun comando legge o scrive `templating` / `variables`**. L'unico modulo che le tocca è `formats/variables.py`, e solo quando cambia il formato.
+Le variabili sono contesto condiviso da tutte le query: cambiarne valori o definizioni cambierebbe il senso di ogni pannello. Per questo **valori, definizioni, tipi e datasource restano quelli della dashboard di partenza**. Due cose invece vengono normalizzate a ogni uscita (`variables.normalize`):
+
+| Regola | Effetto | Opt-out |
+| --- | --- | --- |
+| visibilità | `hide` azzerato: ogni variabile compare in alto, anche se nell'origine era nascosta | `--keep-variable-visibility` |
+| uso nelle query | `cluster_gen="3"` → `cluster_gen="$cluster_gen"` nei pannelli | `--keep-literal-values` |
+
+La sostituzione riguarda i matcher di label (`=`, `=~`, `!=`, `!~`) il cui nome è quello di una variabile **con un valore** (`query`, `custom`, `interval`, `textbox`, `constant`, `switch`). Restano fuori `datasource` (si usa come `${env}`, non è un valore di matcher) e `adhoc`. I valori già riferiti a una variabile e quelli vuoti non vengono toccati.
+
+Entrambe le normalizzazioni sono dichiarate nel report di conversione, con il numero di variabili e di sostituzioni.
 
 | Percorso | Esito |
 | --- | --- |
-| classico → classico (`update`, `delete`, `move`, `layout`, `fork`) | blocco identico, byte per byte |
+| classico → classico (`update`, `delete`, `move`, `layout`, `fork`) | stesse variabili, `hide` normalizzato |
 | v2 → v2 (`update`, `delete tab`, `fork`) | idem |
-| v2 → classico → v2 | identiche al documento di partenza |
-| classico → v2 → classico | identiche al documento di partenza |
+| v2 → classico → v2 | identiche al documento di partenza, con `--keep-variable-visibility` anche `hide` |
+| classico → v2 → classico | idem |
 | `extract` | le **eredita** dalla sorgente: è una scelta, perché i pannelli estratti citano `$variabile` |
 | `update --datasource` | tocca i pannelli, mai la `datasource` dichiarata nelle variabili |
 
@@ -229,7 +238,7 @@ Gli **enum** delle variabili hanno tipi diversi nei due formati e vanno tradotti
 
 Non è una questione estetica: Grafana legge `hide` confrontandolo con `0`, quindi un file classico con `"hide": "dontHide"` finisce per nascondere l'etichetta del selettore. La conversione traduce, il round-trip restituisce la forma originale.
 
-La garanzia è coperta da `tests/test_variables.py`: comandi classici e v2, due giri completi e i due tipi di query. Se qualcuno tocca `templating` per errore, i test falliscono.
+La garanzia è coperta da `tests/test_variables.py`: comandi classici e v2, due giri completi, i due tipi di query, le due normalizzazioni e i rispettivi opt-out. Se qualcuno cambia un valore di una variabile per errore, i test falliscono.
 | `panel.py` | `type`, `fieldConfig`, `options`, `transparent` | `vizConfig.group`, `vizConfig.spec` |
 | `queries.py` | `targets[]`, `transformations[]`, `queryOptions` | `data.spec.queries[].spec.query`, `data.spec.transformations` |
 | `layout.py` | righe e `gridPos` | `layout` (tab → righe → griglia) ed `elements` |
@@ -601,6 +610,8 @@ grafana-utils update panel dashboard.json --match-type timeseries --match-title 
 | `--datasource UID` | stringa | — | almeno un'impostazione |
 | `--datasource-type TIPO` | stringa | — | richiede `--datasource` |
 | `--datasource-create` | flag | off | richiede `--datasource` |
+
+Cambiare `--collapsed` non è solo strutturale: una riga collassata occupa una unità di griglia, una espansa anche lo spazio dei figli. `objects.set_collapsed` riporta i figli sotto l'intestazione (`y = row.y + 1`, scarti relativi conservati) e trasla le righe successive dell'altezza del blocco; in senso inverso le riporta su. Senza questa traslazione i figli di una riga appena espansa finiscono sopra le righe seguenti.
 
 Note implementative: il comando valida prima le dipendenze (`--datasource-type` e `--datasource-create` senza `--datasource` sono errori) e poi la presenza di almeno una modifica. Per ogni target stampa una riga `riga 5 'Row B': titolo 'X', 3 modifiche al contenuto` e chiude con il conteggio. Le operazioni di contenuto passano da `objects.content_panels`, quindi su una riga coinvolgono tutti i suoi pannelli.
 
@@ -1035,6 +1046,22 @@ python3 -m unittest discover -s tests -t . -v
 
 I test isolano i log tramite `GRAFANA_TOOL_LOG_DIR`, quindi il repository non accumula file in `out/`.
 
+### Matrice comandi × parametri
+
+`tests/matrix/` contiene il runner manuale e il test che lo esegue nella suite:
+
+| File | Ruolo |
+| --- | --- |
+| `run_matrix.py` | motore: ~316 combinazioni su `dashboard-classic.json` e `dashboard-v2.json` (più tre derivate: alert, libreria, senza datasource) |
+| `test_matrix.py` | test della suite: chiama `run_all()` e riporta un `subTest` per ogni caso fallito |
+
+```bash
+python3 -m unittest discover -s tests   # include la matrice
+python3 tests/matrix/run_matrix.py      # solo matrice, con riepilogo
+```
+
+Per ogni file prodotto riverifica formato, chiavi interne, id, collocazione degli elementi v2, variabili, sostituzione dei valori fissi, sovrapposizioni dentro le righe, validazione e lint. File generati e report finiscono in `test-output/matrix/` (`work/`, `report.md`, `report.json`), che è ignorata da git.
+
 ---
 
 ## Limiti noti
@@ -1047,6 +1074,7 @@ I test isolano i log tramite `GRAFANA_TOOL_LOG_DIR`, quindi il repository non ac
 - **`move --to-row` vale solo per `panel`**: le righe non si annidano.
 - **`update` e `move` non ricalcolano `gridPos`**: dopo uno spostamento può servire `layout`.
 - **`create panel` copia anche `gridPos`**: il clone può sovrapporsi all'originale finché non si esegue `layout`.
+- **Le righe non hanno un id stabile in v2**: lo schema non lo prevede; in uscita v2 gli id delle righe vengono riassegnati per posizione (i pannelli conservano il proprio). Un `--id` letto prima di una riscrittura v2 può quindi indicare un'altra riga: rileggere la lista dopo la conversione.
 - **`layout` azzera `y` a ogni riga** e ignora i pannelli top-level fuori riga; sulle righe espanse lascia `collapsed: false` e parte da `y = 1`.
 - **`--namespace-exact` esiste solo per i template**: con `--from-id` non c'è nulla da normalizzare.
 - **`extract` accetta un solo oggetto per esecuzione**.

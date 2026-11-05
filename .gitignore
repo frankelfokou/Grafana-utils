@@ -1,4 +1,5 @@
 out/
+test-output/
 __pycache__/
 *.egg-info/
 build/

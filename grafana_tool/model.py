@@ -253,8 +253,15 @@ def title_regex(pattern: str) -> "re.Pattern[str]":
     In Grafana un titolo è un'etichetta: l'identificazione per nome non deve
     dipendere da maiuscole/minuscole. Tutti i comandi che cercano per titolo
     passano da qui.
+
+    Una regex scritta male diventa un `ValueError` con il messaggio di Python:
+    senza questa conversione la CLI uscirebbe con un traceback invece che con
+    un errore leggibile e il relativo log.
     """
-    return re.compile(pattern, re.IGNORECASE)
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"espressione regolare non valida {pattern!r}: {exc}") from exc
 
 
 def renumber_ids(obj: dict[str, Any], base_id: int) -> int:

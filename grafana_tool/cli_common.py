@@ -87,6 +87,21 @@ def add_write_options(parser: argparse.ArgumentParser) -> None:
             "(senza il flag la conversione si ferma)"
         ),
     )
+    parser.add_argument(
+        "--keep-variable-visibility", dest="keep_variable_visibility",
+        action="store_true",
+        help=(
+            "Non rendere visibili le variabili in alto: conserva il `hide` "
+            "della dashboard di origine"
+        ),
+    )
+    parser.add_argument(
+        "--keep-literal-values", dest="keep_literal_values", action="store_true",
+        help=(
+            "Non sostituire con $variabile i valori fissi delle query che "
+            "hanno il nome di una variabile"
+        ),
+    )
     add_severity_option(
         parser, "Soglia che fa fallire la validazione finale (default: error)"
     )

@@ -6,7 +6,7 @@ import unittest
 from grafana_tool import schema
 from grafana_tool.io import InputError
 
-from support import legacy_dashboard, sample_dashboard
+from tests.support import legacy_dashboard, sample_dashboard
 
 
 class DetectTest(unittest.TestCase):

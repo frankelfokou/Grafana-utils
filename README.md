@@ -102,7 +102,7 @@ grafana-utils update row dashboard.json --match-title "Generale" --title "Genera
 Cosa si converte e cosa no:
 
 - **tab**: il formato classico non li ha. Convertendo in classico, i tab vengono **appiattiti in una sola vista**: le righe si susseguono nell'ordine dei tab e il titolo di ogni oggetto di primo livello riceve il nome del tab di provenienza, `<tab>-<titolo>` (`Vista Applicativa-Generale`, `Vista Sistemistica-Infra`). I pannelli fuori riga prendono lo stesso prefisso e finiscono in fondo. Lo scarto viene dichiarato nel report;
-- **variabili**: mai toccate. Nessun comando legge o scrive `templating` / `variables`; una conversione le ri-esprime soltanto, e il giro completo tra formati le restituisce identiche. `extract` le eredita dalla dashboard di partenza, perché i pannelli estratti citano `$variabile`;
+- **variabili**: valori e definizioni non cambiano mai. Due cose però vengono normalizzate in ogni dashboard prodotta: le variabili sono **visibili in alto** (`hide` azzerato), anche se nell'origine erano nascoste; e nei pannelli un valore fisso che ha il nome di una variabile viene sostituito dal riferimento (`cluster_gen="3"` → `cluster_gen="$cluster_gen"`). Si spengono con `--keep-variable-visibility` e `--keep-literal-values`. `extract` eredita le variabili dalla dashboard di partenza;
 - **posizioni**: in v2 ogni riga ha coordinate proprie che partono da `y = 0`. In classico lo spazio è unico, quindi le righe vengono impilate in colonna; una dashboard già classica non viene toccata;
 - **`uid`, `id`, `version`**: non esistono nello schema v2 e in uscita vengono rimossi, con la perdita dichiarata nel report.
 - **alert legacy**: non hanno equivalente v2. La conversione si ferma, a meno di `--drop-alerts`.
@@ -179,6 +179,8 @@ Tutti i comandi che scrivono un file (`create`, `update`, `delete`, `move`, `ext
 | `--dry-run` | flag | off | opzionale; indipendente | Non scrive nulla, ma esegue comunque la validazione in memoria |
 | `--to-format {classic,v2}` | scelta | stesso formato dell'ingresso | opzionale; indipendente | Formato del file di output |
 | `--drop-alerts` | flag | off | solo con uscita v2 | Permette di scartare le regole di alert legacy |
+| `--keep-variable-visibility` | flag | off | opzionale; indipendente | Conserva il `hide` dell'origine invece di mostrare tutte le variabili in alto |
+| `--keep-literal-values` | flag | off | opzionale; indipendente | Non sostituire con `$variabile` i valori fissi delle query |
 | `--severity {info,warning,error}` | scelta | `error` | opzionale; indipendente | Soglia che fa fallire la validazione finale |
 
 I comandi che creano o rinominano oggetti (`create`, `update`, `extract`) accettano anche `--dedupe-titles`, che rende unico il titolo rispetto agli altri già presenti nella dashboard, aggiungendo ` (2)`, ` (3)`.
@@ -282,7 +284,7 @@ Applica una o più modifiche agli oggetti selezionati. Almeno una impostazione �
 | --- | --- | --- | --- | --- |
 | `--title T` | stringa | nessuno | almeno un'impostazione | Nuovo titolo; non può essere vuoto |
 | `--dedupe-titles` | flag | off | con `--title` | Rende unico il nuovo titolo |
-| `--collapsed` / `--expanded` | flag | nessuno | solo `row` | Cambia lo stato della riga spostando i figli nella rappresentazione giusta |
+| `--collapsed` / `--expanded` | flag | nessuno | solo `row` | Cambia lo stato della riga spostando i figli nella rappresentazione giusta e traslando le righe successive dell'altezza del blocco |
 | `--replace OLD=NEW` | ripetibile | nessuno | almeno un'impostazione | Sostituzione su `target[*].expr` |
 | `--datasource UID` | stringa | nessuno | almeno un'impostazione | Imposta `datasource.uid` di pannelli e target |
 | `--datasource-type TIPO` | stringa | nessuno | richiede `--datasource` | Imposta anche `datasource.type` |

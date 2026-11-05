@@ -211,6 +211,61 @@ class SetterTest(unittest.TestCase):
         objects.set_collapsed(db, target, False)
         self.assertEqual([p["id"] for p in db["panels"]], [100, 1, 2, 3, 5, 6, 7, 9])
 
+    def test_espansione_sposta_i_fratelli_successivi(self):
+        """Una riga espansa occupa anche lo spazio dei figli.
+
+        Le coordinate dentro una riga collassata sono relative alla riga: se
+        non venissero riportate sotto l'intestazione, i figli finirebbero
+        sopra le righe successive.
+        """
+        db = {
+            "title": "Griglia",
+            "panels": [
+                {
+                    "id": 1, "type": "row", "title": "Sopra", "collapsed": True,
+                    "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+                    "panels": [
+                        {"id": 2, "type": "text", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 4}},
+                        {"id": 3, "type": "text", "gridPos": {"x": 12, "y": 0, "w": 12, "h": 6}},
+                    ],
+                },
+                {
+                    "id": 4, "type": "row", "title": "Sotto", "collapsed": True,
+                    "gridPos": {"x": 0, "y": 1, "w": 24, "h": 1}, "panels": [],
+                },
+            ],
+        }
+        objects.set_collapsed(
+            db, objects.find_target(db, objects.ROW, 1), False
+        )
+        figli = db["panels"][1:3]
+        self.assertEqual([c["gridPos"]["y"] for c in figli], [1, 1])
+        self.assertEqual(find_row(db, 4)["gridPos"]["y"], 7)
+
+    def test_collassamento_richiude_il_blocco(self):
+        db = {
+            "title": "Griglia",
+            "panels": [
+                {
+                    "id": 1, "type": "row", "title": "Sopra", "collapsed": True,
+                    "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+                    "panels": [
+                        {"id": 2, "type": "text", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 4}},
+                    ],
+                },
+                {
+                    "id": 4, "type": "row", "title": "Sotto", "collapsed": True,
+                    "gridPos": {"x": 0, "y": 1, "w": 24, "h": 1}, "panels": [],
+                },
+            ],
+        }
+        row = objects.find_target(db, objects.ROW, 1)
+        objects.set_collapsed(db, row, False)
+        objects.set_collapsed(db, objects.find_target(db, objects.ROW, 1), True)
+        self.assertEqual([p["id"] for p in db["panels"]], [1, 4])
+        self.assertEqual([p["id"] for p in find_row(db, 1)["panels"]], [2])
+        self.assertEqual(find_row(db, 4)["gridPos"]["y"], 1)
+
     def test_collapsed_vale_solo_per_le_righe(self):
         db = sample_dashboard()
         target = objects.find_target(db, objects.PANEL, 2)

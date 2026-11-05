@@ -39,6 +39,12 @@ class PanelMatcherTest(unittest.TestCase):
         self.assertFalse(matcher.matches(panel(2, "A1")))
         self.assertFalse(matcher.matches(panel(3, "B1", typ="text")))
 
+    def test_regex_non_valida_e_un_errore_di_comando(self):
+        """Una regex scritta male non deve arrivare all'utente come traceback."""
+        with self.assertRaises(ValueError) as ctx:
+            PanelMatcher.from_args(match_title="[")
+        self.assertIn("espressione regolare non valida", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

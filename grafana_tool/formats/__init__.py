@@ -211,22 +211,40 @@ def _assign_missing_ids(db: dict[str, Any]) -> None:
 
 
 def render(
-    db: dict[str, Any], target: str, *, drop_alerts: bool = False
+    db: dict[str, Any],
+    target: str,
+    *,
+    drop_alerts: bool = False,
+    keep_variable_visibility: bool = False,
+    keep_literal_values: bool = False,
 ) -> tuple[dict[str, Any], Report]:
     """Converte il modello canonico nel formato richiesto.
 
     `target` vale `schema.CLASSIC` o `schema.V2`; per il classico il risultato
     è la dashboard canonica senza le chiavi di servizio.
+
+    Prima della conversione il documento di uscita viene normalizzato sulle
+    variabili: tutte visibili in alto e, nei pannelli, valori fissi sostituiti
+    dal riferimento alla variabile (`cluster_gen="3"` → `cluster_gen="$cluster_gen"`).
+    Le due regole si spengono con `keep_variable_visibility` e
+    `keep_literal_values`.
     """
-    if target == schema.V2:
-        return _render_v2(db, drop_alerts=drop_alerts)
-    return _render_classic(db)
-
-
-def _render_classic(db: dict[str, Any]) -> tuple[dict[str, Any], Report]:
-    """Uscita classica: un solo tab, titoli prefissati e righe impilate."""
-    report = Report()
     out = copy.deepcopy(db)
+    report = Report()
+    variables.normalize(
+        out,
+        report,
+        show_all=not keep_variable_visibility,
+        substitute=not keep_literal_values,
+    )
+    if target == schema.V2:
+        return _render_v2(out, drop_alerts=drop_alerts, report=report)
+    return _render_classic(out, report=report)
+
+
+def _render_classic(db: dict[str, Any], *, report: Report) -> tuple[dict[str, Any], Report]:
+    """Uscita classica: un solo tab, titoli prefissati e righe impilate."""
+    out = db
 
     result = flatten_module.flatten(out)
     if result.renames:
@@ -264,10 +282,9 @@ def _render_classic(db: dict[str, Any]) -> tuple[dict[str, Any], Report]:
 
 
 def _render_v2(
-    db: dict[str, Any], *, drop_alerts: bool
+    db: dict[str, Any], *, drop_alerts: bool, report: Report
 ) -> tuple[dict[str, Any], Report]:
     """Uscita v2: `elements` + `layout` ricostruiti dal canonico."""
-    report = Report()
     _guard_alerts(db, drop_alerts)
     _report_stray_rows(db, report)
 

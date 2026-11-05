@@ -261,13 +261,21 @@ def set_title(
 
 
 def set_collapsed(db: dict[str, Any], target: Target, collapsed: bool) -> None:
-    """Cambia lo stato di una riga spostando i figli nella rappresentazione giusta."""
+    """Cambia lo stato di una riga spostando i figli nella rappresentazione giusta.
+
+    Il movimento non è solo strutturale: una riga collassata occupa una sola
+    unità di griglia, una espansa occupa anche lo spazio dei figli. Cambiare
+    `collapsed` senza toccare le coordinate lascerebbe i figli appoggiati sulle
+    righe successive (o un buco al contrario), quindi i fratelli che seguono
+    vengono traslati dell'altezza del blocco.
+    """
     if target.kind != ROW:
         raise ValueError("--collapsed/--expanded valgono solo per le righe.")
     container, idx = find_row_container(db, target.id)
     if container is None:
         raise ValueError(f"Riga {target.id} non trovata.")
-    if container is db.get("rows") and collapsed is False:
+    legacy = container is db.get("rows")
+    if legacy and collapsed is False:
         raise ValueError("Le righe dello schema legacy ('rows') non supportano --expanded.")
 
     row = target.obj
@@ -275,17 +283,74 @@ def set_collapsed(db: dict[str, Any], target: Target, collapsed: bool) -> None:
     if collapsed:
         if row.get("collapsed") is False:
             # da espansa a collassata: i fratelli top-level tornano dentro la riga
-            row["panels"] = list(children)
+            moving = [child for child in children if isinstance(child, dict)]
+            row["panels"] = moving
             container[:] = [
                 item for item in container
-                if not any(item is child for child in children)
+                if not any(item is child for child in moving)
             ]
+            if not legacy:
+                # il blocco si è chiuso: chi segue risale della sua altezza
+                _, row_idx = find_row_container(db, row.get("id"))
+                _shift_after(container, row_idx + 1, -_extent(moving))
     elif row.get("panels"):
         # da collassata a espansa: i figli escono dalla riga, subito dopo
         moving = list(row["panels"])
         row["panels"] = []
+        height = _extent(moving)
+        # Le coordinate dentro una riga collassata sono relative alla riga:
+        # vanno riportate sotto l'intestazione, non lasciate dove capitano.
+        _rebase(moving, _top_of(row))
         container[idx + 1:idx + 1] = moving
+        _shift_after(container, idx + 1 + len(moving), height)
     row["collapsed"] = collapsed
+
+
+def _grid(panel: dict[str, Any]) -> dict[str, Any]:
+    grid = panel.get("gridPos")
+    if not isinstance(grid, dict):
+        grid = {}
+        panel["gridPos"] = grid
+    return grid
+
+
+def _top_of(row: dict[str, Any]) -> int:
+    """Prima riga libera sotto l'intestazione della riga."""
+    grid = row.get("gridPos")
+    if isinstance(grid, dict):
+        return int(grid.get("y", 0) or 0) + int(grid.get("h", 1) or 1)
+    return 1
+
+
+def _extent(panels: list[dict[str, Any]]) -> int:
+    """Altezza occupata dal blocco, conservando gli scarti relativi."""
+    spans = [
+        (int(_grid(p).get("y", 0) or 0), int(_grid(p).get("h", 0) or 0))
+        for p in panels
+    ]
+    if not spans:
+        return 0
+    return max(y + h for y, h in spans) - min(y for y, _ in spans)
+
+
+def _rebase(panels: list[dict[str, Any]], top: int) -> None:
+    """Porta il blocco a partire da `top`, conservando le posizioni relative."""
+    if not panels:
+        return
+    base = min(int(_grid(p).get("y", 0) or 0) for p in panels)
+    for panel in panels:
+        grid = _grid(panel)
+        grid["y"] = top + (int(grid.get("y", 0) or 0) - base)
+
+
+def _shift_after(container: list[dict[str, Any]], start: int, delta: int) -> None:
+    """Trasla in verticale le radici che seguono il blocco."""
+    if not delta:
+        return
+    for item in container[start:]:
+        if isinstance(item, dict) and isinstance(item.get("gridPos"), dict):
+            grid = item["gridPos"]
+            grid["y"] = int(grid.get("y", 0) or 0) + delta
 
 
 def remove(db: dict[str, Any], target: Target, *, keep_children: bool = False) -> int:
